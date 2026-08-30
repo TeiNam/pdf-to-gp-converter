@@ -24,13 +24,13 @@ def main():
     )
     logger = logging.getLogger(__name__)
     
-    print("Starting MCP server for Guitar Pro...")
+    logger.info("Starting MCP server for Guitar Pro...")
     
     try:
         # Create Guitar Pro controller
-        print("Initializing GuitarProController...")
+        logger.info("Initializing GuitarProController...")
         controller = GuitarProController()
-        print("GuitarProController initialized successfully.")
+        logger.info("GuitarProController initialized successfully.")
 
         # Create MCP server
         mcp = FastMCP("GuitarPro Control")

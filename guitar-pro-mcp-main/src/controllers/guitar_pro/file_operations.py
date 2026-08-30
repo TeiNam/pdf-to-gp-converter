@@ -11,7 +11,7 @@ class FileOperationsController(GuitarProMixin):
         """Load a Guitar Pro file."""
         try:
             logger.info(f"Loading Guitar Pro file: {file_path}")
-            self.current_song = parse(file_path)
+            self.current_song = parse(file_path, encoding="cp949")
             
             # Log song details
             logger.info(f"File loaded successfully. Song details:")
@@ -44,7 +44,7 @@ class FileOperationsController(GuitarProMixin):
     def save_file(self, file_path: str) -> None:
         """Save the current song to a Guitar Pro file."""
         self._ensure_song_loaded()
-        write(self.current_song, file_path)
+        write(self.current_song, file_path, encoding="cp949")
             
     def export_to_midi(self, file_path: str) -> bool:
         """

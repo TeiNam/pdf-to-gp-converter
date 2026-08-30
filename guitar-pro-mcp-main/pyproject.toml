@@ -24,6 +24,7 @@ dependencies = [
     "mcp>=0.2.0,<2",
     "mido>=1.2.10",
     "pyguitarpro>=0.7.0",
+    "pymupdf>=1.28.2",
 ]
 
 [project.optional-dependencies]
@@ -59,3 +60,9 @@ disallow_incomplete_defs = true
 testpaths = ["tests"]
 python_files = ["test_*.py"]
 addopts = "-v --cov=src" 
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "pytest-cov>=7.1.0",
+]

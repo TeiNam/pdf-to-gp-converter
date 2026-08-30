@@ -154,11 +154,17 @@ def _chord_tokens(geo, system, x_limit: float) -> list[tuple[float, str]]:
         prev_end, prev_y = glyph.x_end, round(glyph.y, 1)
     if text:
         tokens.append((start_x, text))
-    return [(x, name) for x, name in tokens if chords.looks_like_chord(name)]
+    # x 오름차순 보장 — _chord_at 이 정렬을 가정하고 break 로 조기 종료한다.
+    # 코드 대역에는 baseline 이 여러 줄 있을 수 있어 (y, x) 순서로는 부족하다.
+    return sorted(((x, name) for x, name in tokens
+                   if chords.looks_like_chord(name)), key=lambda pair: pair[0])
 
 
 def _chord_at(tokens: list[tuple[float, str]], x: float) -> str | None:
-    """x 이전(또는 같은 위치)의 가장 가까운 코드명."""
+    """x 이전(또는 같은 위치)의 가장 가까운 코드명.
+
+    `tokens` 는 x 오름차순이어야 한다 — 아래 break 가 그 전제에 의존한다.
+    """
     current = None
     for token_x, name in tokens:
         if token_x <= x + CHORD_APPLY_SLACK:
@@ -279,23 +285,23 @@ def extract_ir(pdf_path: str, tempo: int | None = None,
     제목은 PDF 메타데이터를 쓰지 않는다 — 대상 PDF 의 메타 제목은 mojibake 된
     "Ÿfl˘'‹.musx" 다. 파일명 stem 을 쓰고 인자로 덮어쓸 수 있다.
     """
-    document = pymupdf.open(pdf_path)
     warn = _Warnings()
     measures: list[dict] = []
     saw_text = False
 
-    for page in document:
-        geo = geometry.load_page_geometry(page)
-        if geo.glyphs:
-            saw_text = True
-        for system in geometry.find_systems(geo):
-            all_bounds = geometry.measure_bounds(geo, system)
-            if not all_bounds:
-                continue
-            tokens = _chord_tokens(geo, system, all_bounds[-1][1] + 1.0)
-            for bounds in all_bounds:
-                measures.append(_build_measure(
-                    geo, system, bounds, len(measures), tokens, warn))
+    with pymupdf.open(pdf_path) as document:
+        for page in document:
+            geo = geometry.load_page_geometry(page)
+            if geo.glyphs:
+                saw_text = True
+            for system in geometry.find_systems(geo):
+                all_bounds = geometry.measure_bounds(geo, system)
+                if not all_bounds:
+                    continue
+                tokens = _chord_tokens(geo, system, all_bounds[-1][1] + 1.0)
+                for bounds in all_bounds:
+                    measures.append(_build_measure(
+                        geo, system, bounds, len(measures), tokens, warn))
 
     if not saw_text:
         raise NotATabPdf(

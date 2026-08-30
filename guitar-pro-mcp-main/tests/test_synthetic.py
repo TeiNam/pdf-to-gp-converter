@@ -251,3 +251,27 @@ def test_open_in_guitar_pro_validates_path():
     import mcp_tools
 
     assert mcp_tools.open_in_guitar_pro_impl("/nope/none.gp5")["status"] == "error"
+
+
+def test_chord_tokens_are_x_ascending(tmp_path):
+    """_chord_at 이 break 로 조기 종료하므로 토큰은 x 오름차순이어야 한다.
+
+    실제 악보는 코드 대역에 baseline 이 여러 줄 있어 (y, x) 정렬로는 부족하다.
+    """
+    from utils.tab_pdf import extract, geometry
+
+    doc = pymupdf.open(_synthetic_score(tmp_path / "syn.pdf"))
+    geo = geometry.load_page_geometry(doc[0])
+    system = geometry.find_systems(geo)[0]
+    # 코드 대역(멜로디 5선 위)에 서로 다른 baseline 으로 코드명을 심는다
+    page = doc[0]
+    top = system.melody_ys[0]
+    page.insert_text((300.0, top - 4.0), "G", fontsize=10.0)    # 아래 baseline, 큰 x
+    page.insert_text((60.0, top - 14.0), "Am", fontsize=10.0)   # 위 baseline, 작은 x
+    geo = geometry.load_page_geometry(page)
+    tokens = extract._chord_tokens(geo, system, 500.0)
+    xs = [x for x, _ in tokens]
+    assert xs == sorted(xs), f"x 오름차순이 아니다: {tokens}"
+    assert [name for _, name in tokens] == ["Am", "G"]
+    # 정렬이 없으면 _chord_at 이 G 를 못 보고 break 한다
+    assert extract._chord_at(tokens, 350.0) == "G"

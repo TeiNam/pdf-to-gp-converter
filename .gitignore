@@ -1,0 +1,4 @@
+out_proof.gp5
+*.ir.json
+__pycache__/
+.venv/

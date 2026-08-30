@@ -1,0 +1,15 @@
+{
+    "mcpServers": {
+        "guitar-pro-mcp": {
+            "type": "stdio",
+            "command": "uv",
+            "args": [
+                "--directory",
+                "/Users/teinam/orca/projects/guitar-pro-mcp",
+                "run",
+                "-m",
+                "src.run_mcp_server"
+            ]
+        }
+    }
+}

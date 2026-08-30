@@ -43,10 +43,30 @@ def test_fit_repairs_rounding_drift():
     assert abs(sum(d.quarters for d in fitted) - 4.0) < 1e-9
 
 
-def test_fit_reports_failure_instead_of_lying():
-    """맞출 수 없으면 조용히 틀린 값을 주지 않고 False 를 돌려준다."""
+def test_fit_finds_exact_solution_greedy_would_miss():
+    """[4.0, 4.0] 을 4.0 에 맞추려면 둘 다 내려야 한다 — 그리디는 실패했다."""
     fitted, exact = durations.fit_durations([4.0, 4.0], 4.0)
+    assert exact
+    assert abs(sum(d.quarters for d in fitted) - 4.0) < 1e-9
+    # 어떤 분할이든 둘 다 4.0 보다 짧아야 한다 (그리디는 한쪽을 4.0 으로 남겼다)
+    assert all(d.quarters < 4.0 for d in fitted)
+
+
+def test_fit_reports_failure_instead_of_lying():
+    """정확히 맞출 조합이 없으면 조용히 틀린 값을 주지 않고 False 를 돌려준다.
+
+    legal 최대가 4.0 이라 beat 1개로 5.0 을 만들 수는 없다.
+    """
+    fitted, exact = durations.fit_durations([5.0], 5.0)
     assert not exact
+    assert len(fitted) == 1
+
+
+def test_fit_prefers_lower_snap_cost():
+    """합 제약을 만족하는 조합이 여럿이면 비례값에 가까운 쪽을 고른다."""
+    fitted, exact = durations.fit_durations([1.0, 3.0], 4.0)
+    assert exact
+    assert [d.quarters for d in fitted] == [1.0, 3.0]
 
 
 # ── 합성 악보 ────────────────────────────────────────────────────────────────
@@ -55,7 +75,8 @@ SYN_MELODY_YS = [100.0, 105.0, 110.0, 115.0, 120.0]
 SYN_TAB_YS = [160.0, 168.0, 176.0, 184.0, 192.0, 200.0]
 SYN_STAFF_X0, SYN_STAFF_X1 = 40.0, 400.0
 SYN_BARLINES = [200.0, 400.0]
-SYN_NOTE_XS = [60.0, 100.0, 140.0, 180.0]
+# 마디선까지의 마지막 간격도 같아야 균등 4분음표가 된다 (gap 35 x 4)
+SYN_NOTE_XS = [60.0, 95.0, 130.0, 165.0]
 
 
 def _synthetic_score(path: pathlib.Path) -> pathlib.Path:
@@ -275,3 +296,57 @@ def test_chord_tokens_are_x_ascending(tmp_path):
     assert [name for _, name in tokens] == ["Am", "G"]
     # 정렬이 없으면 _chord_at 이 G 를 못 보고 break 한다
     assert extract._chord_at(tokens, 350.0) == "G"
+
+
+def test_import_tool_refuses_to_overwrite_input_pdf(tmp_path):
+    """ir_path 가 입력 PDF 를 가리키면 거부해야 한다 — 원본 소실 방지."""
+    import mcp_tools
+    from controllers import GuitarProController
+
+    pdf = _synthetic_score(tmp_path / "syn.pdf")
+    before = pdf.read_bytes()
+    controller = GuitarProController()
+
+    result = mcp_tools.import_tab_pdf_impl(controller, str(pdf), ir_path=str(pdf))
+    assert result["status"] == "error"
+    assert pdf.read_bytes() == before, "입력 PDF 가 덮어써졌다"
+    assert controller.current_song is None
+
+
+def test_import_tool_requires_json_suffix_for_ir(tmp_path):
+    import mcp_tools
+    from controllers import GuitarProController
+
+    pdf = _synthetic_score(tmp_path / "syn.pdf")
+    result = mcp_tools.import_tab_pdf_impl(
+        controller=GuitarProController(), pdf_path=str(pdf),
+        ir_path=str(tmp_path / "ir.txt"))
+    assert result["status"] == "error"
+    assert ".json" in result["message"]
+
+
+def test_measure_bounds_drops_barlines_left_of_staff():
+    """좌측 끝보다 앞선 세로선은 버려 역방향 경계를 만들지 않는다."""
+    from utils.tab_pdf import geometry
+
+    geo = geometry.PageGeometry(
+        hlines=[geometry.HLine(160.0, 50.0, 400.0)],
+        vlines=[geometry.VLine(x, 100.0, 200.0) for x in (45.0, 200.0, 400.0)],
+    )
+    system = geometry.System(
+        melody_ys=(100.0, 105.0, 110.0, 115.0, 120.0),
+        tab_ys=(160.0, 168.0, 176.0, 184.0, 192.0, 200.0),
+    )
+    bounds = geometry.measure_bounds(geo, system)
+    assert bounds == [(50.0, 200.0), (200.0, 400.0)]
+    assert all(x0 < x1 for x0, x1 in bounds), f"역방향 경계: {bounds}"
+
+
+def test_system_coordinates_are_immutable():
+    """frozen dataclass 가 실제로 불변이어야 한다."""
+    from utils.tab_pdf import geometry
+
+    system = geometry.System(melody_ys=(1.0,), tab_ys=(2.0,))
+    assert isinstance(system.tab_ys, tuple)
+    with pytest.raises(AttributeError):
+        system.tab_ys = (9.0,)

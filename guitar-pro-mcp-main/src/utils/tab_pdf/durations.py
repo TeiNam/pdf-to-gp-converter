@@ -5,10 +5,13 @@ PDF 를 모르는 순수 계산 모듈이다. x 간격이 음길이에 비례한
 """
 
 from dataclasses import dataclass
+from functools import lru_cache
 
-# 그리디 보정 반복 상한 — beat 수가 수십 개여도 넉넉하다
-MAX_REPAIR_STEPS = 200
 EPSILON = 1e-9
+# 모든 legal 길이는 0.125 (32분음표) 의 배수다. 정수 단위로 환산해 DP 로 정확히 푼다.
+UNIT_QUARTERS = 0.125
+# DP 캐시 크기 — (beat index, 남은 단위) 조합 상한. beat 수십 × 단위 수백이면 충분
+DP_CACHE_SIZE = 100_000
 
 
 @dataclass(frozen=True)
@@ -55,35 +58,52 @@ def _nearest(prop: float) -> LegalDuration:
     return min(LEGAL, key=lambda legal: abs(legal.quarters - prop))
 
 
+def _units(quarters: float) -> int:
+    return round(quarters / UNIT_QUARTERS)
+
+
 def fit_durations(props: list[float],
                   target: float) -> tuple[list[LegalDuration], bool]:
-    """비례값을 legal 값으로 스냅하되 합이 정확히 target 이 되게 보정한다.
+    """비례값을 legal 값으로 스냅하되 합이 정확히 target 이 되게 맞춘다.
 
-    독립 스냅은 반올림 때문에 합이 어긋난다. 스냅 오차가 가장 적게 늘어나는
-    beat 하나를 다른 legal 값으로 바꾸는 그리디를 합이 맞을 때까지 반복한다.
+    독립 스냅은 반올림 때문에 합이 어긋난다. legal 길이가 모두 0.125 의 배수이므로
+    정수 단위 DP 로 "합이 정확히 target 이면서 스냅 오차 총합이 최소" 인 조합을
+    찾는다. 그리디와 달리 해가 존재하면 반드시 찾는다 — 예: `[4.0, 4.0]` 을
+    target 4.0 에 맞출 때 그리디는 실패했지만 DP 는 `[2.0, 2.0]` 을 찾는다.
 
     Returns: (스냅 결과, 합이 정확히 맞았는지)
     """
     if not props:
         return [], True
-    current = [_nearest(prop) for prop in props]
-    for _ in range(MAX_REPAIR_STEPS):
-        diff = target - sum(legal.quarters for legal in current)
-        if abs(diff) < EPSILON:
-            return current, True
-        best = None
-        for index, prop in enumerate(props):
-            for candidate in LEGAL:
-                if candidate is current[index]:
-                    continue
-                remaining = diff - (candidate.quarters - current[index].quarters)
-                if abs(remaining) >= abs(diff) - EPSILON:
-                    continue          # 차이를 줄이지 못하는 후보
-                cost = (abs(candidate.quarters - prop)
-                        - abs(current[index].quarters - prop))
-                if best is None or cost < best[0]:
-                    best = (cost, index, candidate)
-        if best is None:
-            return current, False     # 더 줄일 수 없다 — 거짓말하지 않고 실패 보고
-        current[best[1]] = best[2]
-    return current, False
+
+    target_units = _units(target)
+    if target_units <= 0:
+        return [_nearest(prop) for prop in props], False
+
+    @lru_cache(maxsize=DP_CACHE_SIZE)
+    def solve(index: int, remaining: int) -> tuple[float, tuple[int, ...]] | None:
+        """props[index:] 로 remaining 단위를 정확히 채우는 최소비용 선택."""
+        if index == len(props):
+            return (0.0, ()) if remaining == 0 else None
+        best: tuple[float, tuple[int, ...]] | None = None
+        for choice, legal in enumerate(LEGAL):
+            need = _units(legal.quarters)
+            if need > remaining:
+                continue
+            tail = solve(index + 1, remaining - need)
+            if tail is None:
+                continue
+            cost = abs(legal.quarters - props[index]) + tail[0]
+            if best is None or cost < best[0] - EPSILON:
+                best = (cost, (choice,) + tail[1])
+        return best
+
+    try:
+        solution = solve(0, target_units)
+    finally:
+        solve.cache_clear()
+
+    if solution is None:
+        # 정확히 맞출 조합이 없다 — 거짓말하지 않고 최근접 스냅 + 실패 보고
+        return [_nearest(prop) for prop in props], False
+    return [LEGAL[choice] for choice in solution[1]], True

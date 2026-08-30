@@ -61,8 +61,10 @@ class PageGeometry:
 
 @dataclass(frozen=True)
 class System:
-    melody_ys: list[float]
-    tab_ys: list[float]
+    """frozen 이므로 좌표는 tuple 로 담는다 — list 면 append 로 내부가 바뀐다."""
+
+    melody_ys: tuple[float, ...]
+    tab_ys: tuple[float, ...]
 
 
 def _iter_segments(page):
@@ -119,7 +121,7 @@ def _staff_groups(geo: PageGeometry) -> list[list[float]]:
 def find_systems(geo: PageGeometry) -> list[System]:
     """5선(멜로디) + 6선(타브) 인접쌍을 한 시스템으로 묶는다."""
     groups = _staff_groups(geo)
-    return [System(melody_ys=list(a), tab_ys=list(b))
+    return [System(melody_ys=tuple(a), tab_ys=tuple(b))
             for a, b in zip(groups, groups[1:])
             if len(a) == MELODY_LINE_COUNT and len(b) == TAB_LINE_COUNT]
 
@@ -146,9 +148,14 @@ def tab_left_edge(geo: PageGeometry, system: System) -> float:
 
 
 def measure_bounds(geo: PageGeometry, system: System) -> list[tuple[float, float]]:
-    """마디별 [x0, x1) 경계 목록."""
-    bars = find_barlines(geo, system)
+    """마디별 [x0, x1) 경계 목록.
+
+    좌측 끝보다 앞에 검출된 세로선은 버린다 — 남기면 (50, 45) 같은 역방향 경계가
+    되어 가짜 빈 마디가 생기고 이후 마디 번호가 밀린다.
+    """
+    left = tab_left_edge(geo, system)
+    bars = [x for x in find_barlines(geo, system) if x > left]
     if not bars:
         return []
-    edges = [tab_left_edge(geo, system)] + bars
+    edges = [left] + bars
     return [(edges[i], edges[i + 1]) for i in range(len(bars))]

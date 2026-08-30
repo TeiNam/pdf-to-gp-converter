@@ -101,6 +101,19 @@ def test_real_pdf_system1_coordinates():
     assert [round(x) for x in geometry.find_barlines(geo, system)] == [198, 324, 450, 576]
 
 
+def _count_stroke_glyphs() -> int:
+    """PDF 원본에서 스트로크 기호 글리프를 직접 센다 — 추출기와 독립된 기준값."""
+    from utils.tab_pdf import extract, geometry
+
+    total = 0
+    doc = pymupdf.open(PDF)
+    for page in doc:
+        geo = geometry.load_page_geometry(page)
+        total += sum(1 for g in geo.glyphs
+                     if g.char in (extract.SMUFL_STROKE_DOWN, extract.SMUFL_STROKE_UP))
+    return total
+
+
 EXPECTED_MEASURE1 = [
     [(5, 3)], [(3, 0)], [(1, 0), (2, 3)], [(3, 0)],
     [(6, 0)], [(3, 1)], [(1, 0), (2, 3)], [(3, 1)],
@@ -143,11 +156,21 @@ def test_ir_totals_match_measured_values():
 
 @needs_pdf
 def test_ir_every_measure_sums_to_its_time_signature():
-    """58마디 전부 합제약 스냅 성공. 어떤 종류의 경고도 남지 않아야 한다."""
+    """58마디 전부 합제약 스냅 성공. 결함성 경고가 하나도 없어야 한다.
+
+    `unsupported_glyph` 는 정보성이다 — 음정·리듬은 정확히 옮겼지만 아티큘레이션이나
+    해머온 같은 표기를 반영하지 못했다는 뜻이고, 조용히 버리지 않았다는 증거다.
+    """
     from utils.tab_pdf import extract
 
     ir = extract.extract_ir(str(PDF), tempo=80)
-    assert ir["warnings"] == [], f"경고가 남았다: {ir['warnings'][:5]}"
+    DEFECTS = {"duration_mismatch", "empty_measure", "empty_beat",
+               "unknown_chord", "unsnapped_digit", "time_signature"}
+    defects = [w for w in ir["warnings"] if w["kind"] in DEFECTS]
+    assert defects == [], f"결함성 경고가 남았다: {defects[:5]}"
+    # 반영하지 못한 표기는 반드시 드러나야 한다 (조용한 손실 방지)
+    unsupported = [w for w in ir["warnings"] if w["kind"] == "unsupported_glyph"]
+    assert unsupported, "미반영 표기가 경고로 남지 않았다"
 
 
 @needs_pdf
@@ -211,14 +234,16 @@ def test_gp5_records_strum_direction(tmp_path):
 
     ir = extract.extract_ir(str(PDF))
     ir_strokes = [b for m in ir["measures"] for b in m["beats"] if b["stroke"]]
-    assert len(ir_strokes) == 27, f"IR 스트로크 {len(ir_strokes)}개"
+    # PDF 안의 실제 스트로크 글리프 수와 같아야 한다 (독립 oracle).
+    # 시스템 범위를 제한하지 않았을 때는 다른 시스템 기호까지 집어 27개로 부풀었다.
+    assert len(ir_strokes) == _count_stroke_glyphs(), f"IR 스트로크 {len(ir_strokes)}개"
 
     out = tmp_path / "stroke.gp5"
     build.write_gp5(build.build_song(ir), str(out))
     reparsed = gp.parse(str(out), encoding="cp949")
     recorded = [b for m in reparsed.tracks[0].measures for v in m.voices
                 for b in v.beats if b.effect.stroke.value]
-    assert len(recorded) == 27, ".gp5 에 스트로크가 보존되지 않았다"
+    assert len(recorded) == len(ir_strokes), ".gp5 에 스트로크가 보존되지 않았다"
 
 
 @needs_pdf
@@ -234,7 +259,9 @@ def test_import_tool_end_to_end(tmp_path):
     data = result["data"]
     assert (data["measures"], data["beats"], data["notes"]) == (58, 497, 1560)
     assert data["notation_kinds"] == ["fret", "slash"]
-    assert data["warnings"] == []
+    # 결함성 경고는 없고, 미반영 표기 경고만 정보로 남는다
+    assert all(w["kind"] == "unsupported_glyph" for w in data["warnings"]), \
+        f"결함성 경고: {[w for w in data['warnings'] if w['kind'] != 'unsupported_glyph']}"
 
     out = tmp_path / "out.gp5"
     controller.save_file(str(out))

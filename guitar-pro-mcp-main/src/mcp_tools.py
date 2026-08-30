@@ -3,13 +3,18 @@ from mcp.server.fastmcp import FastMCP, Context
 from typing import Optional, Dict, Any, List
 
 import json
+import logging
 import os
 import shutil
 import subprocess
 
 from utils.tab_pdf import build, extract
 
+logger = logging.getLogger(__name__)
+
 GUITAR_PRO_APP = "Guitar Pro 8"
+# IR 디버그 파일 확장자 — 입력을 덮어쓰지 못하게 강제한다
+IR_SUFFIX = ".json"
 # 산출물 기본 폴더 — 입력 pdf/ 와 대칭
 DEFAULT_OUTPUT_DIR = "gp"
 
@@ -38,6 +43,14 @@ def import_tab_pdf_impl(controller, pdf_path: str, tempo: int = None,
     """
     if not os.path.isfile(pdf_path):
         return {"status": "error", "message": f"PDF 파일이 없습니다: {pdf_path}"}
+    if ir_path:
+        # ir_path 가 입력 PDF 를 가리키면 원본을 JSON 으로 덮어써 복구 불가능해진다
+        if not ir_path.lower().endswith(IR_SUFFIX):
+            return {"status": "error",
+                    "message": f"ir_path 는 {IR_SUFFIX} 여야 합니다: {ir_path}"}
+        if os.path.abspath(ir_path) == os.path.abspath(pdf_path):
+            return {"status": "error",
+                    "message": f"ir_path 가 입력 PDF 와 같습니다: {ir_path}"}
 
     try:
         ir = extract.extract_ir(pdf_path, tempo=tempo, title=title, artist=artist)
@@ -51,6 +64,8 @@ def import_tab_pdf_impl(controller, pdf_path: str, tempo: int = None,
     except OSError as exc:
         return {"status": "error", "message": f"파일 처리 실패: {exc}"}
     except Exception as exc:
+        # 예상 못 한 결함은 traceback 을 남긴다 — 사용자 입력 오류와 구분해야 한다
+        logger.exception("import_tab_pdf 변환 실패: %s", pdf_path)
         return {"status": "error", "message": f"변환 실패: {exc}"}
 
     controller.current_song = song          # 성공 확정 후에만 상태 변경

@@ -318,7 +318,7 @@ IR을 받아 `pyguitarpro` 객체를 만든다. PDF를 전혀 모른다. 4절에
 MCP 도구 호출 3~4회.
 
 ```
-import_tab_pdf("pdf/나는반딧불.pdf")   → 58마디, 노트 N개, 경고 M개
+import_tab_pdf("pdf/나는반딧불.pdf")   → 58마디, 497beat, 1560노트, 경고 26(정보성)
                                        suggested_output = "gp/나는반딧불.gp5"
 get_track_tab(0)                       → 텍스트 타브로 원본 PDF와 대조
 save_guitar_pro("gp/나는반딧불.gp5")

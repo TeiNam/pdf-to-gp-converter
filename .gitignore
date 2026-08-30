@@ -1,5 +1,6 @@
 .DS_Store
 pdf/
+gp/
 out_proof.gp5
 *.ir.json
 __pycache__/

@@ -3,7 +3,8 @@
 - 작성일: 2026-08-31
 - 상태: 승인됨 (구현 계획 대기)
 - 기준 입력: `pdf/나는반딧불.pdf` (3페이지, Finale `.musx` → "Microsoft: Print To PDF")
-- 입력 PDF는 `pdf/` 에 두고 폴더째 gitignore 한다 (상용 악보). 레포에는 커밋되지 않는다
+- 입력 PDF는 `pdf/`, 산출 `.gp5` 는 `gp/` 에 둔다. 둘 다 폴더째 gitignore 한다
+  (상용 악보와 그 파생물). 레포에는 커밋되지 않는다
 - 개정: 변환 로직을 독립 CLI 대신 **guitar-pro-mcp 내부**에 넣도록 4·5·10절 반전
 
 ## 1. 문제와 범위
@@ -317,10 +318,11 @@ IR을 받아 `pyguitarpro` 객체를 만든다. PDF를 전혀 모른다. 4절에
 MCP 도구 호출 3~4회.
 
 ```
-import_tab_pdf("pdf/나는반딧불.pdf")      → 58마디, 노트 N개, 경고 M개
-get_track_tab(0)                      → 텍스트 타브로 원본 PDF와 대조
-save_guitar_pro("나는반딧불.gp5")
-open_in_guitar_pro("나는반딧불.gp5")   → GP8 에 즉시 표시
+import_tab_pdf("pdf/나는반딧불.pdf")   → 58마디, 노트 N개, 경고 M개
+                                       suggested_output = "gp/나는반딧불.gp5"
+get_track_tab(0)                       → 텍스트 타브로 원본 PDF와 대조
+save_guitar_pro("gp/나는반딧불.gp5")
+open_in_guitar_pro("gp/나는반딧불.gp5") → GP8 에 즉시 표시
 ```
 
 경고가 있으면 해당 마디를 IR JSON에서 확인한다. GP8 에서 대조 후 `.gp` 로 저장한다.

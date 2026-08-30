@@ -2,3 +2,6 @@ out_proof.gp5
 *.ir.json
 __pycache__/
 .venv/
+guitar-pro-mcp-main/.venv/
+guitar-pro-mcp-main/*.egg-info/
+guitar-pro-mcp-main/uv.lock

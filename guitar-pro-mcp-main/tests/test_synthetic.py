@@ -102,3 +102,71 @@ def test_glyph_carries_ink_end(tmp_path):
     digits = [g for g in geo.glyphs if g.char == "0"]
     assert digits
     assert all(g.x_end > g.x for g in digits)
+
+
+def test_voicings_cover_this_song():
+    from utils.tab_pdf import chords
+
+    for name in ("Cadd9", "E7", "Am", "F", "G"):
+        voicing = chords.voicing_for(name)
+        assert voicing, f"{name} 보이싱 없음"
+        assert all(1 <= string <= 6 and fret >= 0 for string, fret in voicing)
+        assert len({string for string, _ in voicing}) == len(voicing), "줄 중복"
+
+
+def test_unknown_chord_returns_none_not_a_guess():
+    from utils.tab_pdf import chords
+
+    assert chords.voicing_for("Bm7b5") is None
+    assert chords.voicing_for(None) is None
+
+
+def test_looks_like_chord_rejects_page_numbers():
+    """실제 PDF 코드 대역에는 페이지 번호 '2','3' 이 섞여 들어온다."""
+    from utils.tab_pdf import chords
+
+    assert chords.looks_like_chord("Cadd9")
+    assert chords.looks_like_chord("Bm7")      # 미등록이지만 코드 형태다
+    assert not chords.looks_like_chord("2")
+    assert not chords.looks_like_chord("3")
+    assert not chords.looks_like_chord("H")    # 해머온 표기
+
+
+def test_synthetic_ir_uniform_quarters(tmp_path):
+    """합성 악보 균등 4음 -> 4분음표 4개, 합 4.0. PDF 없이 파이프라인이 돈다."""
+    from utils.tab_pdf import extract
+
+    ir = extract.extract_ir(str(_synthetic_score(tmp_path / "syn.pdf")), title="syn")
+    assert ir["title"] == "syn"
+    assert len(ir["measures"]) == 2
+    beats = ir["measures"][0]["beats"]
+    assert len(beats) == 4
+    assert [b["duration"] for b in beats] == [4, 4, 4, 4]
+    assert [b["notes"] for b in beats] == [[{"string": 3, "fret": 0}]] * 4
+    assert [w for w in ir["warnings"] if w["kind"] == "duration_mismatch"] == []
+
+
+def test_rejects_pdf_without_tab_staff(tmp_path):
+    from utils.tab_pdf import extract
+
+    plain = tmp_path / "plain.pdf"
+    doc = pymupdf.open()
+    doc.new_page().insert_text((72, 72), "hello, not a score")
+    doc.save(str(plain))
+    doc.close()
+
+    with pytest.raises(extract.NotATabPdf):
+        extract.extract_ir(str(plain))
+
+
+def test_rejects_pdf_without_text_layer(tmp_path):
+    from utils.tab_pdf import extract
+
+    blank = tmp_path / "blank.pdf"
+    doc = pymupdf.open()
+    doc.new_page()
+    doc.save(str(blank))
+    doc.close()
+
+    with pytest.raises(extract.NotATabPdf):
+        extract.extract_ir(str(blank))

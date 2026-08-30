@@ -64,3 +64,38 @@ def test_server_module_does_not_print_to_stdout():
     offending = [line.strip() for line in source.splitlines()
                  if line.strip().startswith("print(")]
     assert not offending, f"stdout 오염: {offending}"
+
+
+# ── 실제 PDF 기반 ────────────────────────────────────────────────────────────
+import pymupdf
+
+PDF = pathlib.Path(__file__).resolve().parents[2] / "pdf" / "나는반딧불.pdf"
+needs_pdf = pytest.mark.skipif(not PDF.exists(), reason=f"입력 PDF 없음: {PDF}")
+
+
+@needs_pdf
+def test_real_pdf_system_and_measure_counts():
+    from utils.tab_pdf import geometry
+
+    doc = pymupdf.open(PDF)
+    per_page, measures = [], 0
+    for page in doc:
+        geo = geometry.load_page_geometry(page)
+        systems = geometry.find_systems(geo)
+        per_page.append(len(systems))
+        for system in systems:
+            measures += len(geometry.measure_bounds(geo, system))
+    assert per_page == [4, 5, 5]
+    assert measures == 58
+
+
+@needs_pdf
+def test_real_pdf_system1_coordinates():
+    from utils.tab_pdf import geometry
+
+    doc = pymupdf.open(PDF)
+    geo = geometry.load_page_geometry(doc[0])
+    system = geometry.find_systems(geo)[0]
+    assert [round(y, 1) for y in system.melody_ys] == [145.4, 150.5, 155.6, 160.8, 165.8]
+    assert [round(y, 1) for y in system.tab_ys] == [206.9, 214.6, 222.2, 229.9, 237.6, 245.3]
+    assert [round(x) for x in geometry.find_barlines(geo, system)] == [198, 324, 450, 576]

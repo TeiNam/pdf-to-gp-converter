@@ -170,3 +170,22 @@ def test_rejects_pdf_without_text_layer(tmp_path):
 
     with pytest.raises(extract.NotATabPdf):
         extract.extract_ir(str(blank))
+
+
+def test_synthetic_gp5_roundtrip(tmp_path):
+    """PDF 없이도 IR -> .gp5 -> 재파싱 전 과정이 검증된다."""
+    import guitarpro as gp
+    from utils.tab_pdf import build, extract
+
+    ir = extract.extract_ir(str(_synthetic_score(tmp_path / "syn.pdf")),
+                            title="합성곡", artist="테스트")
+    out = tmp_path / "syn.gp5"
+    build.write_gp5(build.build_song(ir), str(out))
+
+    reparsed = gp.parse(str(out), encoding="cp949")
+    assert reparsed.title == "합성곡"        # 한글이 cp949 로 왕복
+    track = reparsed.tracks[0]
+    assert len(track.measures) == 2
+    first = [b for v in track.measures[0].voices for b in v.beats]
+    assert [b.duration.value for b in first] == [4, 4, 4, 4]
+    assert [sorted((n.string, n.value) for n in b.notes) for b in first] == [[(3, 0)]] * 4

@@ -175,3 +175,47 @@ def test_ir_title_is_not_pdf_metadata_mojibake():
     override = extract.extract_ir(str(PDF), title="반딧불", artist="황가람")
     assert override["title"] == "반딧불"
     assert override["artist"] == "황가람"
+
+
+@needs_pdf
+def test_gp5_roundtrip_preserves_everything(tmp_path):
+    from utils.tab_pdf import build, extract
+
+    ir = extract.extract_ir(str(PDF), tempo=80, artist="황가람")
+    out = tmp_path / "나는반딧불.gp5"
+    build.write_gp5(build.build_song(ir), str(out))
+
+    reparsed = gp.parse(str(out), encoding="cp949")
+    track = reparsed.tracks[0]
+    assert reparsed.title == "나는반딧불"
+    assert reparsed.artist == "황가람"
+    assert reparsed.tempo == 80
+    assert [s.value for s in track.strings] == STANDARD_TUNING
+    assert len(track.measures) == 58
+
+    ir_notes = sum(len(b["notes"]) for m in ir["measures"] for b in m["beats"])
+    gp_notes = sum(len(b.notes)
+                   for m in track.measures for v in m.voices for b in v.beats)
+    assert gp_notes == ir_notes == 1560
+
+    first = [b for v in track.measures[0].voices for b in v.beats]
+    assert [b.duration.value for b in first] == [8] * 8
+    assert [sorted((n.string, n.value) for n in b.notes) for b in first] == \
+           [sorted(group) for group in EXPECTED_MEASURE1]
+
+
+@needs_pdf
+def test_gp5_records_strum_direction(tmp_path):
+    """추출한 다운/업 스트로크가 .gp5 에 남아야 한다."""
+    from utils.tab_pdf import build, extract
+
+    ir = extract.extract_ir(str(PDF))
+    ir_strokes = [b for m in ir["measures"] for b in m["beats"] if b["stroke"]]
+    assert len(ir_strokes) == 27, f"IR 스트로크 {len(ir_strokes)}개"
+
+    out = tmp_path / "stroke.gp5"
+    build.write_gp5(build.build_song(ir), str(out))
+    reparsed = gp.parse(str(out), encoding="cp949")
+    recorded = [b for m in reparsed.tracks[0].measures for v in m.voices
+                for b in v.beats if b.effect.stroke.value]
+    assert len(recorded) == 27, ".gp5 에 스트로크가 보존되지 않았다"

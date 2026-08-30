@@ -2,9 +2,103 @@ from mcp import types
 from mcp.server.fastmcp import FastMCP, Context
 from typing import Optional, Dict, Any, List
 
+import json
+import os
+import shutil
+import subprocess
+
+from utils.tab_pdf import build, extract
+
+GUITAR_PRO_APP = "Guitar Pro 8"
+# 산출물 기본 폴더 — 입력 pdf/ 와 대칭
+DEFAULT_OUTPUT_DIR = "gp"
+
+
+def default_output_path(pdf_path: str) -> str:
+    """산출 경로를 정하고 폴더를 만든다.
+
+    `<root>/pdf/x.pdf` -> `<root>/gp/x.gp5`. 그 외에는 PDF 옆에 `gp/` 를 만든다
+    — 입력 폴더 밖으로 나가지 않는다.
+    """
+    source_dir = os.path.dirname(os.path.abspath(pdf_path))
+    base = (os.path.dirname(source_dir)
+            if os.path.basename(source_dir) == "pdf" else source_dir)
+    out_dir = os.path.join(base, DEFAULT_OUTPUT_DIR)
+    os.makedirs(out_dir, exist_ok=True)
+    stem = os.path.splitext(os.path.basename(pdf_path))[0]
+    return os.path.join(out_dir, f"{stem}.gp5")
+
+
+def import_tab_pdf_impl(controller, pdf_path: str, tempo: int = None,
+                        title: str = None, artist: str = None,
+                        ir_path: str = None) -> Dict[str, Any]:
+    """PDF 타브를 파싱해 controller.current_song 에 적재한다.
+
+    실패 시 controller 상태를 바꾸지 않는다 — 부수효과를 모두 성공 확정 후로 미룬다.
+    """
+    if not os.path.isfile(pdf_path):
+        return {"status": "error", "message": f"PDF 파일이 없습니다: {pdf_path}"}
+
+    try:
+        ir = extract.extract_ir(pdf_path, tempo=tempo, title=title, artist=artist)
+        song = build.build_song(ir)
+        if ir_path:
+            with open(ir_path, "w", encoding="utf-8") as handle:
+                json.dump(ir, handle, ensure_ascii=False, indent=2)
+        suggested = default_output_path(pdf_path)
+    except extract.NotATabPdf as exc:
+        return {"status": "error", "message": str(exc)}
+    except OSError as exc:
+        return {"status": "error", "message": f"파일 처리 실패: {exc}"}
+    except Exception as exc:
+        return {"status": "error", "message": f"변환 실패: {exc}"}
+
+    controller.current_song = song          # 성공 확정 후에만 상태 변경
+    return {
+        "status": "success",
+        "data": {
+            "title": ir["title"],
+            "suggested_output": suggested,
+            "measures": len(ir["measures"]),
+            "beats": sum(len(m["beats"]) for m in ir["measures"]),
+            "notes": sum(len(b["notes"])
+                         for m in ir["measures"] for b in m["beats"]),
+            "notation_kinds": sorted({m["kind"] for m in ir["measures"]}),
+            "warnings": ir["warnings"],
+        },
+    }
+
+
+def open_in_guitar_pro_impl(file_path: str) -> Dict[str, Any]:
+    """저장된 파일을 Guitar Pro 8 로 띄운다. GP8 은 스크립팅 API 가 없다."""
+    if not os.path.isfile(file_path):
+        return {"status": "error", "message": f"파일이 없습니다: {file_path}"}
+    if shutil.which("open") is None:
+        return {"status": "error", "message": "macOS 의 open 명령을 찾을 수 없습니다"}
+    try:
+        subprocess.run(["open", "-a", GUITAR_PRO_APP, file_path], check=True)
+    except (subprocess.CalledProcessError, OSError) as exc:
+        return {"status": "error", "message": f"{GUITAR_PRO_APP} 실행 실패: {exc}"}
+    return {"status": "success",
+            "message": f"{GUITAR_PRO_APP} 로 열었습니다: {file_path}"}
+
+
 def setup_mcp_tools(mcp: FastMCP, controller) -> None:
     """Setup MCP tools for Guitar Pro control."""
     
+    @mcp.tool("import_tab_pdf")
+    def import_tab_pdf(ctx: Context, pdf_path: str, tempo: int = None,
+                       title: str = None, artist: str = None,
+                       ir_path: str = None) -> Dict[str, Any]:
+        """Parse a Finale-engraved guitar tab PDF into the current song."""
+        return import_tab_pdf_impl(controller, pdf_path, tempo, title,
+                                   artist, ir_path)
+
+    @mcp.tool("open_in_guitar_pro")
+    def open_in_guitar_pro(ctx: Context, file_path: str) -> Dict[str, Any]:
+        """Open a saved Guitar Pro file in the Guitar Pro 8 desktop app."""
+        return open_in_guitar_pro_impl(file_path)
+
     @mcp.tool("load_guitar_pro")
     def load_guitar_pro(ctx: Context, file_path: str) -> Dict[str, Any]:
         """Load a Guitar Pro file."""

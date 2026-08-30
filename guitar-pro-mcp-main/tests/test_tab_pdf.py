@@ -219,3 +219,23 @@ def test_gp5_records_strum_direction(tmp_path):
     recorded = [b for m in reparsed.tracks[0].measures for v in m.voices
                 for b in v.beats if b.effect.stroke.value]
     assert len(recorded) == 27, ".gp5 에 스트로크가 보존되지 않았다"
+
+
+@needs_pdf
+def test_import_tool_end_to_end(tmp_path):
+    import mcp_tools
+    from controllers import GuitarProController
+
+    controller = GuitarProController()
+    result = mcp_tools.import_tab_pdf_impl(
+        controller, str(PDF), tempo=80, artist="황가람",
+        ir_path=str(tmp_path / "ir.json"))
+    assert result["status"] == "success"
+    data = result["data"]
+    assert (data["measures"], data["beats"], data["notes"]) == (58, 497, 1560)
+    assert data["notation_kinds"] == ["fret", "slash"]
+    assert data["warnings"] == []
+
+    out = tmp_path / "out.gp5"
+    controller.save_file(str(out))
+    assert gp.parse(str(out), encoding="cp949").title == "나는반딧불"

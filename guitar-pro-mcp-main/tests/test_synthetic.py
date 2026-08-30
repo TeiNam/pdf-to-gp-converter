@@ -189,3 +189,65 @@ def test_synthetic_gp5_roundtrip(tmp_path):
     first = [b for v in track.measures[0].voices for b in v.beats]
     assert [b.duration.value for b in first] == [4, 4, 4, 4]
     assert [sorted((n.string, n.value) for n in b.notes) for b in first] == [[(3, 0)]] * 4
+
+
+def test_default_output_path_rules(tmp_path):
+    """pdf/ 안이면 형제 gp/, 밖이면 PDF 옆 gp/. 폴더는 만들어진다."""
+    import mcp_tools
+
+    inside = tmp_path / "pdf" / "song.pdf"
+    inside.parent.mkdir()
+    inside.touch()
+    assert mcp_tools.default_output_path(str(inside)) == str(tmp_path / "gp" / "song.gp5")
+    assert (tmp_path / "gp").is_dir()
+
+    outside = tmp_path / "loose" / "song.pdf"
+    outside.parent.mkdir()
+    outside.touch()
+    assert mcp_tools.default_output_path(str(outside)) == str(
+        tmp_path / "loose" / "gp" / "song.gp5")
+
+
+def test_import_tool_reports_error_without_raising():
+    import mcp_tools
+    from controllers import GuitarProController
+
+    controller = GuitarProController()
+    result = mcp_tools.import_tab_pdf_impl(controller, "/nope/none.pdf")
+    assert result["status"] == "error"
+    assert controller.current_song is None
+
+
+def test_import_tool_is_atomic_on_ir_write_failure(tmp_path):
+    """IR 저장이 실패하면 current_song 을 바꾸지 않고 error 를 돌려준다."""
+    import mcp_tools
+    from controllers import GuitarProController
+
+    pdf = _synthetic_score(tmp_path / "syn.pdf")
+    controller = GuitarProController()
+    result = mcp_tools.import_tab_pdf_impl(
+        controller, str(pdf), ir_path=str(tmp_path / "no_such_dir" / "ir.json"))
+    assert result["status"] == "error"
+    assert controller.current_song is None, "실패했는데 상태가 바뀌었다"
+
+
+def test_import_tool_loads_synthetic_song(tmp_path):
+    import mcp_tools
+    from controllers import GuitarProController
+
+    pdf = _synthetic_score(tmp_path / "syn.pdf")
+    controller = GuitarProController()
+    ir_path = tmp_path / "ir.json"
+    result = mcp_tools.import_tab_pdf_impl(
+        controller, str(pdf), title="합성곡", ir_path=str(ir_path))
+    assert result["status"] == "success"
+    assert result["data"]["measures"] == 2
+    assert result["data"]["suggested_output"].endswith("gp/syn.gp5")
+    assert ir_path.exists()
+    assert controller.current_song is not None
+
+
+def test_open_in_guitar_pro_validates_path():
+    import mcp_tools
+
+    assert mcp_tools.open_in_guitar_pro_impl("/nope/none.gp5")["status"] == "error"

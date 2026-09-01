@@ -96,6 +96,11 @@ SYSTEM_PROMPT = """\
    그 마디의 가사를 옮길 때는 **그 마디의 모든 음절을 빠짐없이 다시 나열**한다.
    글자를 더하거나 빼거나 바꾸면 그 마디의 가사 보정은 전부 폐기된다.
 3. 코드명 — `{"op":"chord","measure":M,"beat":B,"name":"Am7"}`
+   **이름은 `chord_row`·`chord_in_effect` 에서 가져온다.** 추출기가 코드 행을
+   이미 조립해 읽은 결과다. `unread_glyphs` 의 낱글자(C·a·d·d·9)를 직접 이어붙이면
+   'Cadd9' 를 'C' 로 끊는 오독이 난다 — 실측으로 그 오독이 반복됐다.
+   `chord_row` 가 비어 있으면 그 마디에는 새 코드 표기가 없다는 뜻이니,
+   `chord_in_effect`(앞에서 이어지는 코드)를 쓰거나 보정을 내지 않는다.
    `known_voicings` 에 없는 이름을 쓸 때는 **같은 응답에 `voicing` 보정을 함께**
    내야 한다. 보이싱이 없으면 .gp5 에 코드가 아예 표시되지 않아 폐기된다.
 4. 보이싱 — `{"op":"voicing","name":"Am7","frets":[0,1,0,2,0,-1]}`
@@ -139,6 +144,8 @@ def _batch_payload(ir: dict, measures: list[dict]) -> str:
                     }
                     for position, beat in enumerate(measure["beats"])
                 ],
+                "chord_row": measure.get("chord_row", []),
+                "chord_in_effect": measure.get("chord_in_effect"),
                 "unread_glyphs": measure.get("glyphs", []),
             }
             for measure in measures

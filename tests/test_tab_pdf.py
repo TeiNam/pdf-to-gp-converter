@@ -342,3 +342,21 @@ def test_chord_derived_beats_carry_no_extractor_techniques():
                  for i, b in enumerate(m["beats"])
                  if b["from_chord"] and b["techniques"]]
     assert not offenders, f"from_chord beat 에 연주법이 있다: {offenders[:5]}"
+
+
+@needs_pdf
+def test_chord_row_carries_assembled_names_not_loose_letters():
+    """AI 가 코드 대역 낱글자를 다시 조립하면 'Cadd9' 를 'C' 로 끊는 오독이 났다.
+
+    추출기가 읽은 이름을 IR 에 실어 넘겨서 그 오류 부류를 없앤다.
+    """
+    from tab_pdf import chords, extract
+
+    ir = extract.extract_ir(str(PDF))
+    names = {token["name"] for m in ir["measures"] for token in m["chord_row"]}
+    assert names == set(chords.VOICINGS), f"코드 행에서 읽은 이름: {sorted(names)}"
+    assert "C" not in names, "'Cadd9' 가 'C' 로 끊겼다"
+
+    # 코드 표기가 없는 마디에도 앞에서 이어지는 코드가 있어야 한다
+    covered = sum(1 for m in ir["measures"] if m["chord_in_effect"])
+    assert covered > len(ir["measures"]) // 2, f"{covered}/{len(ir['measures'])} 마디만 커버"

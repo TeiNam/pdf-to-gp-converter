@@ -447,19 +447,34 @@ def test_voicing_must_actually_sound_the_named_chord(frets, hint):
     assert hint in _reasons(outcome)[0]
 
 
-def test_minimum_tone_count_still_guards_two_note_qualities():
-    """required 만으로는 파워코드에서 근음 하나가 통과한다 (5도는 생략 가능)."""
+@pytest.mark.parametrize("name, frets, tones", [
+    ("C", [-1, -1, -1, 2, 3, -1], "C·E"),
+    ("Dm", [1, -1, -1, 0, -1, -1], "D·F"),
+])
+def test_a_partial_voicing_that_only_omits_the_fifth_is_accepted(name, frets, tones):
+    """3음을 요구하면 '5도는 언제나 생략 가능' 규칙과 정면으로 부딪친다."""
     _, outcome = corrections.apply_corrections(
-        _ir(), [{"op": "voicing", "name": "B5", "frets": [-1, -1, -1, -1, 2, -1]}])
+        _ir(), [{"op": "voicing", "name": name, "frets": frets}])
 
-    assert not outcome.applied
-    assert "화음이라고 볼 수 없다" in _reasons(outcome)[0]
+    assert len(outcome.applied) == 1, f"{name} {tones}: {_reasons(outcome)}"
+
+
+def test_a_lone_root_never_passes_as_a_chord():
+    """근음 하나가 어떤 코드로든 통과하면 검증이 무의미하다."""
+    for name in ("C", "B5", "Bm7", "Cadd9"):
+        _, outcome = corrections.apply_corrections(
+            _ir(), [{"op": "voicing", "name": name,
+                     "frets": [-1, -1, -1, -1, 3, -1]}])       # C 하나
+        assert not outcome.applied, f"{name} 이 단음으로 통과했다"
 
 
 @pytest.mark.parametrize("name, frets, why", [
-    # C·F·Bb·D — 11도와 부딪치는 3도, 그리고 5도를 뺀 표준 보이싱
-    ("C11", [-1, 3, 3, 3, 3, -1], "11도와 부딪치는 3도를 뺀 표준 보이싱"),
-    ("C13", [5, 3, 3, 2, 3, -1], "9도를 뺀 표준 보이싱"),
+    # C·F·Bb — 11도와 부딪치는 3도, 9도, 5도를 뺀 표준 보이싱
+    ("C11", [-1, -1, 3, 3, 3, -1], "3·9·5도를 뺀 표준 보이싱"),
+    # C·E·Bb·A — 9도와 11도를 뺀 표준 보이싱
+    ("C13", [5, -1, 3, 2, 3, -1], "9·11도를 뺀 표준 보이싱"),
+    # C·E·Bb·F·A — 11도를 포함한 보이싱. 금지하면 안 된다
+    ("C13", [5, 6, 3, 2, 3, -1], "11도를 포함한 보이싱"),
     ("C6/9", [3, 3, 2, 2, 3, -1], "성질 이름에 '/' 가 든 코드"),
 ])
 def test_extension_chords_that_omit_tones_in_practice_are_accepted(name, frets, why):
@@ -468,6 +483,16 @@ def test_extension_chords_that_omit_tones_in_practice_are_accepted(name, frets, 
         _ir(), [{"op": "voicing", "name": name, "frets": frets}])
 
     assert len(outcome.applied) == 1, f"{why}: {_reasons(outcome)}"
+
+
+def test_an_extension_chord_still_needs_its_own_extension():
+    """C13 에 13도(A)가 없으면 C13 이 아니다 — optional 을 너무 넓히면 안 된다."""
+    _, outcome = corrections.apply_corrections(
+        _ir(), [{"op": "voicing", "name": "C13",
+                 "frets": [-1, 6, 3, 2, 3, -1]}])              # C·E·Bb·F, A 없음
+
+    assert not outcome.applied
+    assert "주장하는 음이 빠졌다" in _reasons(outcome)[0]
 
 
 def test_mismatch_reason_names_the_check_that_actually_failed():

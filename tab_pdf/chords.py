@@ -54,7 +54,9 @@ _QUALITIES: dict[str, tuple[int, ...]] = {
     "7sus4": (0, 5, 7, 10),
     "9": (0, 2, 4, 7, 10),
     "11": (0, 2, 4, 5, 7, 10),
-    "13": (0, 2, 4, 7, 9, 10),
+    # 13화음은 이론상 11도까지 쌓인다. 허용은 하고 필수에서만 뺀다 —
+    # 금지하면 11도를 포함한 멀쩡한 보이싱이 거부된다
+    "13": (0, 2, 4, 5, 7, 9, 10),
     "add9": (0, 2, 4, 7),
     "aug": (0, 4, 8),
     "+": (0, 4, 8),
@@ -75,18 +77,16 @@ _QUALITIES: dict[str, tuple[int, ...]] = {
 }
 
 
-# 화음이라고 부를 최소 음 수. 이보다 적으면 근음 하나만 짚어도 어떤 코드든
-# "부분집합" 이라 통과해버린다. 파워코드(5)처럼 성질 자체가 2음이면 그 수를 쓴다.
-MIN_CHORD_TONES = 3
-
-# 완전5도는 어느 코드에서든 생략한다 — 기타에서 가장 흔한 생략이다.
 PERFECT_FIFTH = 7
-# 5도 말고도 실제 연주에서 빼는 음. 확장 코드는 6줄에 다 담기지 않는다.
-# 표준 C11 은 11도와 부딪치는 3도를 빼고, 표준 C13 은 9도를 뺀다.
+# 생략해도 그 코드로 인정하는 음. 기본은 완전5도 하나 — 기타에서 가장 흔한 생략이다.
+# 확장 코드는 6줄에 다 담기지 않아 더 많이 뺀다: 표준 C11 은 11도와 부딪치는 3도를,
+# 표준 C13 은 9도와 11도를 뺀다. 파워코드(5)는 5도가 곧 성질이라 뺄 것이 없다.
 _OPTIONAL_INTERVALS: dict[str, frozenset[int]] = {
-    "11": frozenset({2, 4}),
-    "13": frozenset({2}),
+    "5": frozenset(),
+    "11": frozenset({2, 4, PERFECT_FIFTH}),
+    "13": frozenset({2, 5, PERFECT_FIFTH}),
 }
+_OPTIONAL_DEFAULT = frozenset({PERFECT_FIFTH})
 
 
 def _required_intervals(quality: str) -> frozenset[int]:
@@ -94,8 +94,12 @@ def _required_intervals(quality: str) -> frozenset[int]:
 
     코드명이 7th·9th·6th 를 말하면 그 음이 없으면 다른 코드다 — B·D·F# 를
     `Bm7` 이라 부르면 7도(A)가 없으니 그냥 Bm 이다.
+
+    이 집합이 "근음 하나로 아무 코드나 통과" 를 막는 유일한 장치다. 별도의 최소
+    음 수 조건은 두지 않는다 — 3음을 요구하면 5도를 뺀 C·E 같은 멀쩡한 부분
+    보이싱이 거부되어, 5도 생략 허용 규칙과 정면으로 부딪친다.
     """
-    optional = _OPTIONAL_INTERVALS.get(quality, frozenset()) | {PERFECT_FIFTH}
+    optional = _OPTIONAL_INTERVALS.get(quality, _OPTIONAL_DEFAULT)
     return frozenset(_QUALITIES[quality]) - optional
 
 
@@ -176,11 +180,10 @@ def lowest_pitch_class(voicing, tuning) -> int | None:
 def voicing_matches(name: str, voicing, tuning) -> bool | None:
     """보이싱이 코드명대로 소리 나는지. 성질을 모르면 None (판정 불가).
 
-    네 가지를 본다:
+    세 가지를 본다:
     1. 코드에 없는 음을 내지 않는다 — 실측 예: Bm7 에 개방현 6개(EADGBE)
     2. 이름이 주장하는 음이 다 있다 — B·D·F# 는 Bm7 이 아니라 Bm 이다
-    3. 화음이라 부를 만큼 음이 있다 — 부분집합만 보면 B 한 음이 Bm7 로 통과한다
-    4. 분수 코드면 지정된 베이스가 최저음이다 (`C/E` 의 최저음은 E)
+    3. 분수 코드면 지정된 베이스가 최저음이다 (`C/E` 의 최저음은 E)
 
     5도 생략은 통과시킨다 — 기타에서 가장 흔한 생략이다. 확장 코드(11·13)에서
     실제로 빼는 음도 `_OPTIONAL_INTERVALS` 에 적어 통과시킨다.
@@ -190,8 +193,6 @@ def voicing_matches(name: str, voicing, tuning) -> bool | None:
         return None
     played = voicing_pitch_classes(voicing, tuning)
     if not played <= spec.classes or not spec.required <= played:
-        return False
-    if len(played) < min(MIN_CHORD_TONES, len(spec.classes)):
         return False
     if spec.bass is not None and lowest_pitch_class(voicing, tuning) != spec.bass:
         return False

@@ -482,6 +482,11 @@ def _build_measure(geo, system, bounds, index, tokens, warn,
     measure = {
         "index": index, "time_sig": list(time_sig), "kind": kind, "beats": [],
         "glyphs": _annotation_glyphs(geo, system, bounds, beat_xs, fret_glyphs),
+        # 추출기가 코드 행에서 이미 조립해 읽은 이름. AI 가 낱글자를 다시 조립하면
+        # 'Cadd9' 를 'C' 로 끊는 오독이 생긴다 — 읽은 결과를 그대로 넘긴다.
+        "chord_row": [{"x": round(x, 1), "name": name} for x, name in tokens
+                      if x0 <= x < x1],
+        "chord_in_effect": _chord_at(tokens, x0),
     }
     if not beat_xs:
         warn.add(index, "empty_measure", f"판정 {kind}, x {x0:.1f}..{x1:.1f}")

@@ -206,10 +206,6 @@ def _voicing_mismatch(name: str, voicing, tuning) -> str:
     if missing:
         return (f"{name} 이 주장하는 음이 빠졌다 (반음값 {missing}) "
                 f"— 다른 코드가 된다")
-    minimum = min(chords.MIN_CHORD_TONES, len(spec.classes))
-    if len(played) < minimum:
-        return (f"음이 {len(played)}개뿐이라 {name} 화음이라고 볼 수 없다 "
-                f"(최소 {minimum}개)")
     lowest = chords.lowest_pitch_class(voicing, tuning)
     return (f"{name} 의 최저음은 반음값 {spec.bass} 여야 하는데 {lowest} 다")
 

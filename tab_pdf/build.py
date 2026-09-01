@@ -3,8 +3,8 @@
 import guitarpro as gp
 from guitarpro.models import (
     Beat, BeatStatus, BeatStrokeDirection, Chord, Duration, GuitarString,
-    Measure, MeasureHeader, Note, NoteType, SlideType, Song, TimeSignature,
-    Track, Voice,
+    LyricLine, Lyrics, Measure, MeasureHeader, Note, NoteType, SlideType,
+    Song, TimeSignature, Track, Voice,
 )
 
 from . import chords
@@ -19,6 +19,8 @@ NYLON_GUITAR_MIDI_PROGRAM = 24
 # 스트로크 속도. 0 은 "스트로크 없음" 이라 1 이상을 준다
 STROKE_VALUE = 1
 GUITAR_STRINGS = 6
+# GP5 는 가사 줄 5개를 갖는다. 우리는 첫 줄만 쓴다 (곡 전체가 한 줄에 들어간다)
+LYRIC_LINE_COUNT = 5
 # Chord.strings 에서 안 쓰는 줄을 나타내는 값
 UNUSED_STRING = -1
 
@@ -34,6 +36,24 @@ def _apply_stroke(beat: Beat, stroke: str | None) -> None:
         return
     beat.effect.stroke.direction = direction
     beat.effect.stroke.value = STROKE_VALUE
+
+
+def _lyrics_for(ir: dict) -> Lyrics | None:
+    """beat 에 배정된 음절을 GP5 가사 한 줄로 조립한다.
+
+    GP 는 공백으로 나뉜 토큰을 노트에 순서대로 붙인다. 음절이 없는 beat 는 빈
+    토큰으로 건너뛴다. 시작 마디는 첫 음절이 있는 마디다.
+    """
+    start = next((m["index"] for m in ir["measures"]
+                  if any(b.get("lyric") for b in m["beats"])), None)
+    if start is None:
+        return None
+    tokens = [beat.get("lyric") or ""
+              for measure in ir["measures"] if measure["index"] >= start
+              for beat in measure["beats"]]
+    lines = [LyricLine(startingMeasure=start + 1, lyrics=" ".join(tokens))]
+    lines += [LyricLine() for _ in range(LYRIC_LINE_COUNT - 1)]
+    return Lyrics(trackChoice=0, lines=lines)
 
 
 def _apply_techniques(beat: Beat, techniques: list[dict]) -> None:
@@ -125,6 +145,9 @@ def build_song(ir: dict) -> Song:
         track.measures.append(measure)
 
     song.tracks.append(track)
+    lyrics = _lyrics_for(ir)
+    if lyrics is not None:
+        song.lyrics = lyrics
     return song
 
 

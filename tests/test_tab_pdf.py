@@ -264,3 +264,43 @@ def test_techniques_land_on_the_right_string(tmp_path):
     assert sum(1 for n in notes if n.effect.hammer) == 4
     assert sum(1 for n in notes if n.effect.slides) == 2
     assert all(n.string == 2 for n in notes if n.effect.hammer or n.effect.slides)
+
+
+@needs_pdf
+def test_lyrics_are_extracted_and_complete(tmp_path):
+    """가사 317자가 한 글자도 유실되지 않아야 한다.
+
+    보컬이 기타 아르페지오보다 촘촘한 구간이 있어(한 마디에 음절 10개 vs beat 8.6개)
+    beat 하나에 둘 이상이 몰린다. 버리면 "나는내가빛나는" 이 "나빛나는" 이 되므로
+    이어 붙인다.
+    """
+    from tab_pdf import build, extract
+
+    ir = extract.extract_ir(str(PDF))
+    assigned = [b["lyric"] for m in ir["measures"] for b in m["beats"] if b["lyric"]]
+    assert sum(len(text) for text in assigned) == 317
+
+    first_line = "".join(
+        b["lyric"] or "" for m in ir["measures"] if 8 <= m["index"] < 12
+        for b in m["beats"])
+    assert first_line == "나는내가빛나는별인줄알았어요한번도의심한적없었죠"
+
+    out = tmp_path / "lyrics.gp5"
+    build.write_gp5(build.build_song(ir), str(out))
+    song = gp.parse(str(out), encoding="cp949")
+    line = song.lyrics.lines[0]
+    assert line.startingMeasure == 9
+    tokens = line.lyrics.split(" ")
+    assert sum(len(t) for t in tokens) == 317, "왕복에서 가사가 유실됐다"
+
+
+def test_lyric_extraction_excludes_music_glyphs():
+    """SMuFL 음악 기호는 유니코드 사설 영역이라 한글 하한을 그냥 넘는다.
+
+    제외하지 않으면 가사 317자가 436자로 부풀었다.
+    """
+    from tab_pdf import extract
+
+    assert extract._in_range("", extract.PRIVATE_USE_RANGE)   # noteheadBlack
+    assert not extract._in_range("나", extract.PRIVATE_USE_RANGE)
+    assert ord("") >= extract.LYRIC_MIN_CODEPOINT, "하한만으로는 못 걸러낸다"

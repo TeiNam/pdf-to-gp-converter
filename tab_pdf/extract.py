@@ -52,6 +52,14 @@ SMUFL_TIMESIG_DIGIT_RANGE = (0xE080, 0xE089)
 TECHNIQUE_KINDS = {"H": "hammer", "P": "hammer", "S": "slide"}
 # 표기에 딸린 방향 주석 문자 ('S.D' 의 '.', 'D') — 별도 의미로 쓰지 않는다
 TECHNIQUE_ANNOTATION = frozenset(".DU")
+# 가사는 멜로디 staff 아래 ~ 타브 staff 위 대역에 놓인다.
+# 이 대역에는 영문 연주 지시("with 16beat arp play")도 있어 한글만 취한다.
+# 영문 가사 악보에는 이 규칙이 통하지 않는다 (이 곡은 한글 가사다).
+LYRIC_MIN_CODEPOINT = 0x1100
+# SMuFL 음악 기호는 유니코드 사설 영역에 있어 위 하한을 그냥 넘는다 — 제외해야 한다
+PRIVATE_USE_RANGE = (0xE000, 0xF8FF)
+# 음절을 beat 에 붙일 x 허용 오차 (pt). beat 간격 ≈15, 음절 폭 ≈10
+LYRIC_SNAP_DISTANCE = 12.0
 SMUFL_REST_RANGE = (0xE4E0, 0xE4FF)             # 타브 대역에 나오면 경고
 SMUFL_STROKE_DOWN = ""
 SMUFL_STROKE_UP = ""
@@ -271,6 +279,37 @@ def _techniques(geo, system, x0, x1, fret_glyphs, letter_index) -> list[dict]:
     return result
 
 
+def _lyric_syllables(geo, system) -> list[tuple[float, str]]:
+    """멜로디 staff 와 타브 staff 사이의 가사 음절을 (x, 글자) 로 뽑는다."""
+    low, high = system.melody_ys[-1], system.tab_ys[0]
+    return sorted(
+        ((g.x, g.char) for g in geo.glyphs
+         if low < g.y < high and ord(g.char) >= LYRIC_MIN_CODEPOINT
+         and not _in_range(g.char, PRIVATE_USE_RANGE)),
+        key=lambda pair: pair[0],
+    )
+
+
+def _assign_lyrics(beat_xs: list[float],
+                   syllables: list[tuple[float, str]]) -> dict[float, str]:
+    """음절을 x 가 가장 가까운 beat 에 배정한다.
+
+    조판된 악보에서 x 는 시간 위치다. 같은 x 의 기타 beat 에 붙이면 노래하는
+    시점과 맞는다.
+
+    보컬이 기타 아르페지오보다 촘촘한 구간이 있어(한 마디에 음절 10개 vs beat 8.6개)
+    beat 하나에 둘 이상이 몰릴 수 있다. 그때는 이어 붙인다 — 음절을 버리면 가사가
+    "나는내가빛나는" 에서 "나빛나는" 처럼 망가진다.
+    """
+    if not beat_xs:
+        return {}
+    assigned: dict[float, str] = {}
+    for syllable_x, char in syllables:
+        beat_x = min(beat_xs, key=lambda bx: abs(bx - syllable_x))
+        assigned[beat_x] = assigned.get(beat_x, "") + char
+    return assigned
+
+
 def _cluster(xs: list[float]) -> list[float]:
     clustered: list[float] = []
     for x in sorted(xs):
@@ -328,7 +367,8 @@ def _beat_notes(fret_glyphs, beat_x, system, index, warn) -> list[dict]:
 
 
 def _build_measure(geo, system, bounds, index, tokens, warn,
-                   time_sig: tuple[int, int], letter_index) -> dict:
+                   time_sig: tuple[int, int], letter_index,
+                   syllables: list[tuple[float, str]]) -> dict:
     x0, x1 = bounds
     fret_glyphs = _fret_glyphs(geo, system, x0, x1, letter_index)
     slash_xs = _slash_xs(geo, system, x0, x1)
@@ -338,6 +378,8 @@ def _build_measure(geo, system, bounds, index, tokens, warn,
 
     techniques = _techniques(geo, system, x0, x1, fret_glyphs, letter_index)
     beat_xs = _cluster([g.x for g in fret_glyphs] + slash_xs)
+    lyrics = _assign_lyrics(
+        beat_xs, [(x, c) for x, c in syllables if x0 <= x < x1])
     measure = {"index": index, "time_sig": list(time_sig),
                "kind": kind, "beats": []}
     if not beat_xs:
@@ -380,6 +422,7 @@ def _build_measure(geo, system, bounds, index, tokens, warn,
             "dotted": duration.dotted,
             "chord": chord,
             "stroke": stroke,
+            "lyric": lyrics.get(beat_x),
             "techniques": [
                 {"string": t["string"], "kind": t["kind"]} for t in techniques
                 if abs(t["x"] - beat_x) <= BEAT_CLUSTER_TOLERANCE
@@ -419,10 +462,11 @@ def extract_ir(pdf_path: str, tempo: int | None = None,
                                  f"{detected[0]}/{detected[1]} 박자를 감지했다 "
                                  f"— 이 경로는 실제 악보로 검증되지 않았다")
                 tokens = _chord_tokens(geo, system, all_bounds[-1][1] + 1.0)
+                syllables = _lyric_syllables(geo, system)
                 for bounds in all_bounds:
                     measures.append(_build_measure(
                         geo, system, bounds, len(measures), tokens, warn,
-                        time_sig, letter_index))
+                        time_sig, letter_index, syllables))
 
     if not saw_text:
         raise NotATabPdf(

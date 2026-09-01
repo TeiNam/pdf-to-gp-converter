@@ -1,5 +1,5 @@
 [project]
-name = "gpx-converter"
+name = "pdf-to-gp-converter"
 version = "0.1.0"
 description = "PDF 기타 타브 악보 -> Guitar Pro .gp5 변환 CLI"
 requires-python = ">=3.10"

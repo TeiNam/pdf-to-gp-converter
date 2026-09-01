@@ -5,14 +5,10 @@
 """
 
 import pathlib
-import sys
-
-sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "mcp"))
-
 import pymupdf
 import pytest
 
-from utils.tab_pdf import durations
+from tab_pdf import durations
 
 
 def test_target_quarters():
@@ -75,19 +71,21 @@ SYN_MELODY_YS = [100.0, 105.0, 110.0, 115.0, 120.0]
 SYN_TAB_YS = [160.0, 168.0, 176.0, 184.0, 192.0, 200.0]
 SYN_STAFF_X0, SYN_STAFF_X1 = 40.0, 400.0
 SYN_BARLINES = [200.0, 400.0]
-# 마디선까지의 마지막 간격도 같아야 균등 4분음표가 된다 (gap 35 x 4)
-SYN_NOTE_XS = [60.0, 95.0, 130.0, 165.0]
+# 마디선까지의 마지막 간격도 같아야 균등 4분음표가 된다
+SYN_NOTE_XS = [60.0, 95.0, 130.0, 165.0]        # 마디1: gap 35 x 4 (마디선 200)
+SYN_NOTE_XS_2 = [220.0, 265.0, 310.0, 355.0]    # 마디2: gap 45 x 4 (마디선 400)
 
 
 def _synthetic_score(path: pathlib.Path) -> pathlib.Path:
     """5선+6선 한 시스템, 마디 2개, 3번선 개방 4음(균등)인 최소 악보."""
+    path.parent.mkdir(parents=True, exist_ok=True)
     doc = pymupdf.open()
     page = doc.new_page(width=612, height=792)
     for y in SYN_MELODY_YS + SYN_TAB_YS:
         page.draw_line((SYN_STAFF_X0, y), (SYN_STAFF_X1, y), width=0.4)
     for x in SYN_BARLINES:
         page.draw_line((x, SYN_MELODY_YS[0]), (x, SYN_TAB_YS[-1]), width=0.6)
-    for x in SYN_NOTE_XS:
+    for x in SYN_NOTE_XS + SYN_NOTE_XS_2:
         page.insert_text((x, SYN_TAB_YS[2]), "0", fontsize=9.3)
     doc.save(str(path))
     doc.close()
@@ -95,7 +93,7 @@ def _synthetic_score(path: pathlib.Path) -> pathlib.Path:
 
 
 def test_synthetic_finds_one_system(tmp_path):
-    from utils.tab_pdf import geometry
+    from tab_pdf import geometry
 
     doc = pymupdf.open(_synthetic_score(tmp_path / "syn.pdf"))
     systems = geometry.find_systems(geometry.load_page_geometry(doc[0]))
@@ -105,7 +103,7 @@ def test_synthetic_finds_one_system(tmp_path):
 
 
 def test_synthetic_finds_two_measures(tmp_path):
-    from utils.tab_pdf import geometry
+    from tab_pdf import geometry
 
     doc = pymupdf.open(_synthetic_score(tmp_path / "syn.pdf"))
     geo = geometry.load_page_geometry(doc[0])
@@ -116,7 +114,7 @@ def test_synthetic_finds_two_measures(tmp_path):
 
 def test_glyph_carries_ink_end(tmp_path):
     """x_end 가 origin 보다 커야 한다 — 코드명 토큰화가 여기 의존한다."""
-    from utils.tab_pdf import geometry
+    from tab_pdf import geometry
 
     doc = pymupdf.open(_synthetic_score(tmp_path / "syn.pdf"))
     geo = geometry.load_page_geometry(doc[0])
@@ -126,7 +124,7 @@ def test_glyph_carries_ink_end(tmp_path):
 
 
 def test_voicings_cover_this_song():
-    from utils.tab_pdf import chords
+    from tab_pdf import chords
 
     for name in ("Cadd9", "E7", "Am", "F", "G"):
         voicing = chords.voicing_for(name)
@@ -136,7 +134,7 @@ def test_voicings_cover_this_song():
 
 
 def test_unknown_chord_returns_none_not_a_guess():
-    from utils.tab_pdf import chords
+    from tab_pdf import chords
 
     assert chords.voicing_for("Bm7b5") is None
     assert chords.voicing_for(None) is None
@@ -144,7 +142,7 @@ def test_unknown_chord_returns_none_not_a_guess():
 
 def test_looks_like_chord_rejects_page_numbers():
     """실제 PDF 코드 대역에는 페이지 번호 '2','3' 이 섞여 들어온다."""
-    from utils.tab_pdf import chords
+    from tab_pdf import chords
 
     assert chords.looks_like_chord("Cadd9")
     assert chords.looks_like_chord("Bm7")      # 미등록이지만 코드 형태다
@@ -155,7 +153,7 @@ def test_looks_like_chord_rejects_page_numbers():
 
 def test_synthetic_ir_uniform_quarters(tmp_path):
     """합성 악보 균등 4음 -> 4분음표 4개, 합 4.0. PDF 없이 파이프라인이 돈다."""
-    from utils.tab_pdf import extract
+    from tab_pdf import extract
 
     ir = extract.extract_ir(str(_synthetic_score(tmp_path / "syn.pdf")), title="syn")
     assert ir["title"] == "syn"
@@ -168,7 +166,7 @@ def test_synthetic_ir_uniform_quarters(tmp_path):
 
 
 def test_rejects_pdf_without_tab_staff(tmp_path):
-    from utils.tab_pdf import extract
+    from tab_pdf import extract
 
     plain = tmp_path / "plain.pdf"
     doc = pymupdf.open()
@@ -181,7 +179,7 @@ def test_rejects_pdf_without_tab_staff(tmp_path):
 
 
 def test_rejects_pdf_without_text_layer(tmp_path):
-    from utils.tab_pdf import extract
+    from tab_pdf import extract
 
     blank = tmp_path / "blank.pdf"
     doc = pymupdf.open()
@@ -196,7 +194,7 @@ def test_rejects_pdf_without_text_layer(tmp_path):
 def test_synthetic_gp5_roundtrip(tmp_path):
     """PDF 없이도 IR -> .gp5 -> 재파싱 전 과정이 검증된다."""
     import guitarpro as gp
-    from utils.tab_pdf import build, extract
+    from tab_pdf import build, extract
 
     ir = extract.extract_ir(str(_synthetic_score(tmp_path / "syn.pdf")),
                             title="합성곡", artist="테스트")
@@ -212,122 +210,9 @@ def test_synthetic_gp5_roundtrip(tmp_path):
     assert [sorted((n.string, n.value) for n in b.notes) for b in first] == [[(3, 0)]] * 4
 
 
-def test_default_output_path_rules(tmp_path):
-    """pdf/ 안이면 형제 gp/, 밖이면 PDF 옆 gp/. 폴더는 만들어진다."""
-    import mcp_tools
-
-    inside = tmp_path / "pdf" / "song.pdf"
-    inside.parent.mkdir()
-    inside.touch()
-    assert mcp_tools.default_output_path(str(inside)) == str(tmp_path / "gp" / "song.gp5")
-    assert (tmp_path / "gp").is_dir()
-
-    outside = tmp_path / "loose" / "song.pdf"
-    outside.parent.mkdir()
-    outside.touch()
-    assert mcp_tools.default_output_path(str(outside)) == str(
-        tmp_path / "loose" / "gp" / "song.gp5")
-
-
-def test_import_tool_reports_error_without_raising():
-    import mcp_tools
-    from controllers import GuitarProController
-
-    controller = GuitarProController()
-    result = mcp_tools.import_tab_pdf_impl(controller, "/nope/none.pdf")
-    assert result["status"] == "error"
-    assert controller.current_song is None
-
-
-def test_import_tool_is_atomic_on_ir_write_failure(tmp_path):
-    """IR 저장이 실패하면 current_song 을 바꾸지 않고 error 를 돌려준다."""
-    import mcp_tools
-    from controllers import GuitarProController
-
-    pdf = _synthetic_score(tmp_path / "syn.pdf")
-    controller = GuitarProController()
-    result = mcp_tools.import_tab_pdf_impl(
-        controller, str(pdf), ir_path=str(tmp_path / "no_such_dir" / "ir.json"))
-    assert result["status"] == "error"
-    assert controller.current_song is None, "실패했는데 상태가 바뀌었다"
-
-
-def test_import_tool_loads_synthetic_song(tmp_path):
-    import mcp_tools
-    from controllers import GuitarProController
-
-    pdf = _synthetic_score(tmp_path / "syn.pdf")
-    controller = GuitarProController()
-    ir_path = tmp_path / "ir.json"
-    result = mcp_tools.import_tab_pdf_impl(
-        controller, str(pdf), title="합성곡", ir_path=str(ir_path))
-    assert result["status"] == "success"
-    assert result["data"]["measures"] == 2
-    assert result["data"]["suggested_output"].endswith("gp/syn.gp5")
-    assert ir_path.exists()
-    assert controller.current_song is not None
-
-
-def test_open_in_guitar_pro_validates_path():
-    import mcp_tools
-
-    assert mcp_tools.open_in_guitar_pro_impl("/nope/none.gp5")["status"] == "error"
-
-
-def test_chord_tokens_are_x_ascending(tmp_path):
-    """_chord_at 이 break 로 조기 종료하므로 토큰은 x 오름차순이어야 한다.
-
-    실제 악보는 코드 대역에 baseline 이 여러 줄 있어 (y, x) 정렬로는 부족하다.
-    """
-    from utils.tab_pdf import extract, geometry
-
-    doc = pymupdf.open(_synthetic_score(tmp_path / "syn.pdf"))
-    geo = geometry.load_page_geometry(doc[0])
-    system = geometry.find_systems(geo)[0]
-    # 코드 대역(멜로디 5선 위)에 서로 다른 baseline 으로 코드명을 심는다
-    page = doc[0]
-    top = system.melody_ys[0]
-    page.insert_text((300.0, top - 4.0), "G", fontsize=10.0)    # 아래 baseline, 큰 x
-    page.insert_text((60.0, top - 14.0), "Am", fontsize=10.0)   # 위 baseline, 작은 x
-    geo = geometry.load_page_geometry(page)
-    tokens = extract._chord_tokens(geo, system, 500.0)
-    xs = [x for x, _ in tokens]
-    assert xs == sorted(xs), f"x 오름차순이 아니다: {tokens}"
-    assert [name for _, name in tokens] == ["Am", "G"]
-    # 정렬이 없으면 _chord_at 이 G 를 못 보고 break 한다
-    assert extract._chord_at(tokens, 350.0) == "G"
-
-
-def test_import_tool_refuses_to_overwrite_input_pdf(tmp_path):
-    """ir_path 가 입력 PDF 를 가리키면 거부해야 한다 — 원본 소실 방지."""
-    import mcp_tools
-    from controllers import GuitarProController
-
-    pdf = _synthetic_score(tmp_path / "syn.pdf")
-    before = pdf.read_bytes()
-    controller = GuitarProController()
-
-    result = mcp_tools.import_tab_pdf_impl(controller, str(pdf), ir_path=str(pdf))
-    assert result["status"] == "error"
-    assert pdf.read_bytes() == before, "입력 PDF 가 덮어써졌다"
-    assert controller.current_song is None
-
-
-def test_import_tool_requires_json_suffix_for_ir(tmp_path):
-    import mcp_tools
-    from controllers import GuitarProController
-
-    pdf = _synthetic_score(tmp_path / "syn.pdf")
-    result = mcp_tools.import_tab_pdf_impl(
-        controller=GuitarProController(), pdf_path=str(pdf),
-        ir_path=str(tmp_path / "ir.txt"))
-    assert result["status"] == "error"
-    assert ".json" in result["message"]
-
-
 def test_measure_bounds_drops_barlines_left_of_staff():
     """좌측 끝보다 앞선 세로선은 버려 역방향 경계를 만들지 않는다."""
-    from utils.tab_pdf import geometry
+    from tab_pdf import geometry
 
     geo = geometry.PageGeometry(
         hlines=[geometry.HLine(160.0, 50.0, 400.0)],
@@ -344,9 +229,76 @@ def test_measure_bounds_drops_barlines_left_of_staff():
 
 def test_system_coordinates_are_immutable():
     """frozen dataclass 가 실제로 불변이어야 한다."""
-    from utils.tab_pdf import geometry
+    from tab_pdf import geometry
 
     system = geometry.System(melody_ys=(1.0,), tab_ys=(2.0,))
     assert isinstance(system.tab_ys, tuple)
     with pytest.raises(AttributeError):
         system.tab_ys = (9.0,)
+
+
+# ── CLI ──────────────────────────────────────────────────────────────────────
+
+def test_cli_default_output_path_rules(tmp_path):
+    """pdf/ 안이면 형제 gp/, 밖이면 PDF 옆 gp/. 폴더는 만들어진다."""
+    import convert
+
+    inside = tmp_path / "pdf" / "song.pdf"
+    inside.parent.mkdir()
+    inside.touch()
+    assert convert.default_output_path(str(inside)) == str(tmp_path / "gp" / "song.gp5")
+    assert (tmp_path / "gp").is_dir()
+
+    outside = tmp_path / "loose" / "song.pdf"
+    outside.parent.mkdir()
+    outside.touch()
+    assert convert.default_output_path(str(outside)) == str(
+        tmp_path / "loose" / "gp" / "song.gp5")
+
+
+def test_cli_converts_synthetic_score(tmp_path):
+    import guitarpro as gp
+    import convert
+
+    pdf = _synthetic_score(tmp_path / "pdf" / "syn.pdf")
+    ir_path = tmp_path / "out.ir.json"
+    code = convert.main([str(pdf), "--tempo", "90", "--title", "합성곡",
+                         "--ir", str(ir_path)])
+    assert code == 0, "결함성 경고 없이 끝나야 한다"
+    out = tmp_path / "gp" / "syn.gp5"
+    assert out.is_file()
+    assert ir_path.is_file()
+    song = gp.parse(str(out), encoding="cp949")
+    assert song.title == "합성곡"
+    assert song.tempo == 90
+    assert len(song.tracks[0].measures) == 2
+
+
+def test_cli_refuses_to_overwrite_input_pdf(tmp_path):
+    """--ir 가 입력 PDF 를 가리키면 거부해야 한다 — 원본 소실 방지."""
+    import convert
+
+    pdf = _synthetic_score(tmp_path / "syn.pdf")
+    before = pdf.read_bytes()
+    assert convert.main([str(pdf), "--ir", str(pdf)]) == 2
+    assert pdf.read_bytes() == before, "입력 PDF 가 덮어써졌다"
+
+
+def test_cli_requires_json_suffix_for_ir(tmp_path):
+    import convert
+
+    pdf = _synthetic_score(tmp_path / "syn.pdf")
+    assert convert.main([str(pdf), "--ir", str(tmp_path / "ir.txt")]) == 2
+
+
+def test_cli_rejects_missing_and_non_tab_pdf(tmp_path):
+    import convert
+
+    assert convert.main(["/nope/none.pdf"]) == 2
+
+    plain = tmp_path / "plain.pdf"
+    doc = pymupdf.open()
+    doc.new_page().insert_text((72, 72), "hello, not a score")
+    doc.save(str(plain))
+    doc.close()
+    assert convert.main([str(plain)]) == 2

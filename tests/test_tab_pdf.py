@@ -5,65 +5,11 @@
 """
 
 import pathlib
-import sys
-
-sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "mcp"))
-
 import guitarpro as gp
 import pytest
 
-from controllers.guitar_pro.file_operations import FileOperationsController
 
 STANDARD_TUNING = [64, 59, 55, 50, 45, 40]
-
-
-def _one_note_song(title="나는 반딧불", artist="황가람"):
-    from guitarpro.models import (
-        Beat, BeatStatus, Duration, GuitarString, Measure, MeasureHeader,
-        Note, NoteType, Song, TimeSignature, Track, Voice,
-    )
-    song = Song(title=title, artist=artist, tempo=80)
-    song.tracks.clear()
-    song.measureHeaders.clear()
-    track = Track(song, name="Guitar")
-    track.strings = [GuitarString(i + 1, v) for i, v in enumerate(STANDARD_TUNING)]
-    track.measures.clear()
-    header = MeasureHeader(number=1)
-    header.timeSignature = TimeSignature()
-    song.measureHeaders.append(header)
-    measure = Measure(track, header)
-    measure.voices.clear()
-    voice = Voice(measure)
-    beat = Beat(voice, duration=Duration(value=4), status=BeatStatus.normal)
-    beat.notes.append(Note(beat, value=3, string=5, type=NoteType.normal))
-    voice.beats.append(beat)
-    measure.voices.append(voice)
-    measure.voices.append(Voice(measure))
-    track.measures.append(measure)
-    song.tracks.append(track)
-    return song
-
-
-def test_save_and_load_preserve_korean(tmp_path):
-    """cp1252 기본값이면 저장에서 UnicodeEncodeError, 읽기에서 mojibake 가 된다."""
-    out = tmp_path / "한글제목.gp5"
-    controller = FileOperationsController()
-    controller.current_song = _one_note_song()
-    controller.save_file(str(out))
-
-    reader = FileOperationsController()
-    reader.load_file(str(out))
-    assert reader.current_song.title == "나는 반딧불"
-    assert reader.current_song.artist == "황가람"
-
-
-def test_server_module_does_not_print_to_stdout():
-    """stdio 서버는 stdout 에 MCP 메시지 외 아무것도 쓰지 않아야 한다."""
-    source = (pathlib.Path(__file__).resolve().parents[1]
-              / "mcp" / "run_mcp_server.py").read_text(encoding="utf-8")
-    offending = [line.strip() for line in source.splitlines()
-                 if line.strip().startswith("print(")]
-    assert not offending, f"stdout 오염: {offending}"
 
 
 # ── 실제 PDF 기반 ────────────────────────────────────────────────────────────
@@ -75,7 +21,7 @@ needs_pdf = pytest.mark.skipif(not PDF.exists(), reason=f"입력 PDF 없음: {PD
 
 @needs_pdf
 def test_real_pdf_system_and_measure_counts():
-    from utils.tab_pdf import geometry
+    from tab_pdf import geometry
 
     doc = pymupdf.open(PDF)
     per_page, measures = [], 0
@@ -91,7 +37,7 @@ def test_real_pdf_system_and_measure_counts():
 
 @needs_pdf
 def test_real_pdf_system1_coordinates():
-    from utils.tab_pdf import geometry
+    from tab_pdf import geometry
 
     doc = pymupdf.open(PDF)
     geo = geometry.load_page_geometry(doc[0])
@@ -103,7 +49,7 @@ def test_real_pdf_system1_coordinates():
 
 def _count_stroke_glyphs() -> int:
     """PDF 원본에서 스트로크 기호 글리프를 직접 센다 — 추출기와 독립된 기준값."""
-    from utils.tab_pdf import extract, geometry
+    from tab_pdf import extract, geometry
 
     total = 0
     doc = pymupdf.open(PDF)
@@ -123,7 +69,7 @@ EXPECTED_MEASURE1 = [
 @needs_pdf
 def test_ir_measure1_exact_beats_and_durations():
     """마디1 = 8 beat / 10 노트, 전부 8분음표. beat 3·7 은 2음 화음."""
-    from utils.tab_pdf import extract
+    from tab_pdf import extract
 
     ir = extract.extract_ir(str(PDF), tempo=80)
     beats = ir["measures"][0]["beats"]
@@ -135,7 +81,7 @@ def test_ir_measure1_exact_beats_and_durations():
 
 @needs_pdf
 def test_ir_totals_match_measured_values():
-    from utils.tab_pdf import extract
+    from tab_pdf import extract
 
     ir = extract.extract_ir(str(PDF), tempo=80)
     assert len(ir["measures"]) == 58
@@ -161,7 +107,7 @@ def test_ir_every_measure_sums_to_its_time_signature():
     `unsupported_glyph` 는 정보성이다 — 음정·리듬은 정확히 옮겼지만 아티큘레이션이나
     해머온 같은 표기를 반영하지 못했다는 뜻이고, 조용히 버리지 않았다는 증거다.
     """
-    from utils.tab_pdf import extract
+    from tab_pdf import extract
 
     ir = extract.extract_ir(str(PDF), tempo=80)
     DEFECTS = {"duration_mismatch", "empty_measure", "empty_beat",
@@ -175,7 +121,7 @@ def test_ir_every_measure_sums_to_its_time_signature():
 
 @needs_pdf
 def test_ir_chord_names_are_exactly_the_five():
-    from utils.tab_pdf import extract
+    from tab_pdf import extract
 
     ir = extract.extract_ir(str(PDF), tempo=80)
     seen = set()
@@ -190,7 +136,7 @@ def test_ir_chord_names_are_exactly_the_five():
 @needs_pdf
 def test_ir_title_is_not_pdf_metadata_mojibake():
     """PDF 메타 제목은 mojibake 된 .musx 파일명이다. 파일명 stem 을 써야 한다."""
-    from utils.tab_pdf import extract
+    from tab_pdf import extract
 
     ir = extract.extract_ir(str(PDF))
     assert ir["title"] == "나는반딧불"
@@ -202,7 +148,7 @@ def test_ir_title_is_not_pdf_metadata_mojibake():
 
 @needs_pdf
 def test_gp5_roundtrip_preserves_everything(tmp_path):
-    from utils.tab_pdf import build, extract
+    from tab_pdf import build, extract
 
     ir = extract.extract_ir(str(PDF), tempo=80, artist="황가람")
     out = tmp_path / "나는반딧불.gp5"
@@ -230,7 +176,7 @@ def test_gp5_roundtrip_preserves_everything(tmp_path):
 @needs_pdf
 def test_gp5_records_strum_direction(tmp_path):
     """추출한 다운/업 스트로크가 .gp5 에 남아야 한다."""
-    from utils.tab_pdf import build, extract
+    from tab_pdf import build, extract
 
     ir = extract.extract_ir(str(PDF))
     ir_strokes = [b for m in ir["measures"] for b in m["beats"] if b["stroke"]]
@@ -247,22 +193,15 @@ def test_gp5_records_strum_direction(tmp_path):
 
 
 @needs_pdf
-def test_import_tool_end_to_end(tmp_path):
-    import mcp_tools
-    from controllers import GuitarProController
-
-    controller = GuitarProController()
-    result = mcp_tools.import_tab_pdf_impl(
-        controller, str(PDF), tempo=80, artist="황가람",
-        ir_path=str(tmp_path / "ir.json"))
-    assert result["status"] == "success"
-    data = result["data"]
-    assert (data["measures"], data["beats"], data["notes"]) == (58, 497, 1560)
-    assert data["notation_kinds"] == ["fret", "slash"]
-    # 결함성 경고는 없고, 미반영 표기 경고만 정보로 남는다
-    assert all(w["kind"] == "unsupported_glyph" for w in data["warnings"]), \
-        f"결함성 경고: {[w for w in data['warnings'] if w['kind'] != 'unsupported_glyph']}"
+def test_cli_end_to_end(tmp_path):
+    """실제 악보를 CLI 로 변환해 .gp5 가 나오고 결함성 경고가 없어야 한다."""
+    import convert
 
     out = tmp_path / "out.gp5"
-    controller.save_file(str(out))
-    assert gp.parse(str(out), encoding="cp949").title == "나는반딧불"
+    code = convert.main([str(PDF), "-o", str(out), "--tempo", "80",
+                         "--artist", "황가람", "--ir", str(tmp_path / "ir.json")])
+    assert code == 0, "결함성 경고가 있다"
+    song = gp.parse(str(out), encoding="cp949")
+    assert song.title == "나는반딧불"
+    assert song.artist == "황가람"
+    assert len(song.tracks[0].measures) == 58

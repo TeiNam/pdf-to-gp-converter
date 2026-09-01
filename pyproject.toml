@@ -1,12 +1,10 @@
 [project]
 name = "gpx-converter"
 version = "0.1.0"
-description = "PDF 기타 타브 악보 -> Guitar Pro 변환 MCP 서버"
+description = "PDF 기타 타브 악보 -> Guitar Pro .gp5 변환 CLI"
 requires-python = ">=3.10"
 license = { text = "MIT" }
 dependencies = [
-    "mcp>=0.2.0,<2",
-    "mido>=1.2.10",
     "pyguitarpro>=0.7.0",
     "pymupdf>=1.28.2",
 ]
@@ -18,15 +16,14 @@ dev = [
 ]
 
 [tool.uv]
-# mcp/ 에 __init__.py 를 두면 파이썬 `mcp` 라이브러리를 가린다.
-# 설치형 패키지가 아니라 로컬 MCP 서버이므로 빌드하지 않는다.
-# 서버는 `uv run mcp/run_mcp_server.py` 로 실행한다 (`-m` 은 패키지를 요구해서 못 쓴다).
+# 설치형 패키지가 아니라 로컬 도구다. `uv run convert.py ...` 로 쓴다.
 package = false
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["."]
 python_files = ["test_*.py"]
-addopts = "-v --cov=mcp"
+addopts = "-v --cov=tab_pdf --cov=convert"
 
 [tool.black]
 line-length = 88

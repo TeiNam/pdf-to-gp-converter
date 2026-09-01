@@ -48,11 +48,11 @@ SMUFL_SLASH_RANGE = smufl.SLASH
 SMUFL_ARTICULATION_RANGE = smufl.ARTICULATION     # 악센트 등 — 반영하지 않고 경고
 SMUFL_TIMESIG_DIGIT_BASE = smufl.TIMESIG_DIGIT[0]  # E080='0' … E089='9'
 SMUFL_TIMESIG_DIGIT_RANGE = smufl.TIMESIG_DIGIT
-# 기타 연주법 약어. 표기는 같은 줄의 두 음 사이에 놓이고, 효과는 앞 음이 갖는다.
-# GP 는 해머온/풀오프를 한 플래그로 다룬다.
-TECHNIQUE_KINDS = {"H": "hammer", "P": "hammer", "S": "slide"}
-# 표기에 딸린 방향 주석 문자 ('S.D' 의 '.', 'D') — 별도 의미로 쓰지 않는다
-TECHNIQUE_ANNOTATION = frozenset(".DU")
+# 타브에 찍히는 연주법 약어 → 우리 연주법 이름. 표기는 같은 줄의 두 음 사이에
+# 놓이고 효과는 앞 음이 갖는다. GP 는 해머온/풀오프를 한 플래그로 다룬다.
+# 값은 corrections.TECHNIQUE_KINDS 의 부분집합이어야 한다 — 아니면 build 가
+# 조용히 버린다 (테스트로 묶어 뒀다).
+TECHNIQUE_GLYPHS = {"H": "hammer", "P": "hammer", "S": "slide"}
 # 가사는 멜로디 staff 아래 ~ 타브 staff 위 대역에 놓인다.
 # 이 대역에는 영문 연주 지시("with 16beat arp play")도 있어 한글만 취한다.
 # 영문 가사 악보에는 이 규칙이 통하지 않는다 (이 곡은 한글 가사다).
@@ -269,7 +269,7 @@ def _techniques(geo, system, x0, x1, fret_glyphs, letter_index) -> list[dict]:
     for glyph in geo.glyphs:
         if not (x0 <= glyph.x < x1) or not _in_tab_band(glyph, system):
             continue
-        kind = TECHNIQUE_KINDS.get(glyph.char)
+        kind = TECHNIQUE_GLYPHS.get(glyph.char)
         if kind is None or glyph.size > MAX_FRET_GLYPH_SIZE:
             continue
         if _has_adjacent_letter(letter_index, glyph):

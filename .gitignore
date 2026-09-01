@@ -1,6 +1,7 @@
 .DS_Store
 pdf/
 gp/
+docs/superpowers/
 out_proof.gp5
 *.ir.json
 __pycache__/

@@ -205,3 +205,34 @@ def test_cli_end_to_end(tmp_path):
     assert song.title == "나는반딧불"
     assert song.artist == "황가람"
     assert len(song.tracks[0].measures) == 58
+
+
+@needs_pdf
+def test_gp5_has_chord_diagrams_at_chord_changes(tmp_path):
+    """코드가 바뀌는 지점마다 다이어그램이 붙어야 한다.
+
+    첫 페이지 상단 코드 목록은 GP7/8 의 DiagramCollection 기능이라 .gp5 로는
+    표현할 수 없다. GP5 는 beat 에 붙이는 방식만 있다.
+    """
+    from tab_pdf import build, chords, extract
+
+    ir = extract.extract_ir(str(PDF))
+    out = tmp_path / "chords.gp5"
+    build.write_gp5(build.build_song(ir), str(out))
+
+    song = gp.parse(str(out), encoding="cp949")
+    diagrams = [b.effect.chord
+                for m in song.tracks[0].measures for v in m.voices
+                for b in v.beats if b.effect.chord]
+    assert diagrams, ".gp5 에 코드 다이어그램이 없다"
+    assert {d.name for d in diagrams} == set(chords.VOICINGS)
+
+    # 매 beat 가 아니라 변화 지점에만 — 코드 붙은 beat 수보다 훨씬 적어야 한다
+    chord_beats = sum(1 for m in ir["measures"] for b in m["beats"] if b["chord"])
+    assert len(diagrams) < chord_beats / 2, \
+        f"다이어그램 {len(diagrams)}개 / 코드 beat {chord_beats}개 — 너무 많다"
+
+    # 보이싱이 정확히 옮겨졌는지 (0=1번줄 … 5=6번줄, 미사용 -1)
+    sample = next(d for d in diagrams if d.name == "Cadd9")
+    expected = dict(chords.VOICINGS["Cadd9"])
+    assert list(sample.strings) == [expected.get(i + 1, -1) for i in range(6)]

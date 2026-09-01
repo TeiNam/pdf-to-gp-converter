@@ -98,7 +98,7 @@ def _report_refinement(ir: dict) -> None:
         print(f"  메모 : {note}")
 
 
-def _report(ir: dict, output: str) -> int:
+def _report(ir: dict, output: str, mode: str) -> int:
     """변환 요약을 출력하고 결함성 경고 개수를 돌려준다."""
     beats = sum(len(m["beats"]) for m in ir["measures"])
     notes = sum(len(b["notes"]) for m in ir["measures"] for b in m["beats"])
@@ -108,6 +108,9 @@ def _report(ir: dict, output: str) -> int:
     print(f"마디   : {len(ir['measures'])}  (표기법 {dict(kinds)})")
     print(f"beat   : {beats}   노트: {notes}")
     print(f"저장   : {output}")
+    lyrics = sum(1 for m in ir["measures"] for b in m["beats"] if b.get("lyric"))
+    if lyrics:
+        print(f"가사   : {lyrics}개 beat 에 배정  (--lyrics {mode})")
     _report_refinement(ir)
 
     defects = [w for w in ir["warnings"] if w["kind"] in DEFECT_KINDS]
@@ -141,6 +144,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--artist", help="아티스트")
     parser.add_argument("--open", action="store_true",
                         dest="open_app", help=f"저장 후 {GUITAR_PRO_APP} 로 열기")
+    parser.add_argument("--lyrics", choices=build.LYRIC_MODES,
+                        default=build.DEFAULT_LYRIC_MODE,
+                        help="가사를 담을 곳: row=GP5 가사 줄(GP 가 음표에 분배), "
+                             "beat=beat 별 텍스트(x 좌표 배정을 그대로 박는다). "
+                             f"기본 {build.DEFAULT_LYRIC_MODE}")
     parser.add_argument("--ai", action="store_true",
                         help="1차 변환 결과를 AI 로 보정한다 (.env 설정 필요)")
     parser.add_argument("--ai-limit", type=int, metavar="N",
@@ -174,12 +182,12 @@ def main(argv: list[str] | None = None) -> int:
 
     output = args.output or default_output_path(args.pdf)
     os.makedirs(os.path.dirname(os.path.abspath(output)), exist_ok=True)
-    build.write_gp5(build.build_song(ir), output)
+    build.write_gp5(build.build_song(ir, lyric_mode=args.lyrics), output)
     if args.ir:
         with open(args.ir, "w", encoding="utf-8") as handle:
             json.dump(ir, handle, ensure_ascii=False, indent=2)
 
-    defects = _report(ir, output)
+    defects = _report(ir, output, args.lyrics)
     if args.open_app:
         open_in_guitar_pro(output)
     return 1 if defects else 0

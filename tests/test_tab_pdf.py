@@ -286,12 +286,54 @@ def test_lyrics_are_extracted_and_complete(tmp_path):
     assert first_line == "나는내가빛나는별인줄알았어요한번도의심한적없었죠"
 
     out = tmp_path / "lyrics.gp5"
-    build.write_gp5(build.build_song(ir), str(out))
+    build.write_gp5(build.build_song(ir, lyric_mode="row"), str(out))
     song = gp.parse(str(out), encoding="cp949")
     line = song.lyrics.lines[0]
     assert line.startingMeasure == 9
     tokens = line.lyrics.split(" ")
     assert sum(len(t) for t in tokens) == 317, "왕복에서 가사가 유실됐다"
+
+
+@needs_pdf
+def test_lyrics_are_bound_to_a_real_track(tmp_path):
+    """trackChoice 는 가사를 묶을 트랙을 가리키는 int 이고 트랙은 1부터 센다.
+
+    0 을 넣으면 어느 트랙에도 묶이지 않아 GP 가 가사를 아예 그리지 않는다 —
+    실제로 그렇게 나갔고, 악보에 가사가 안 붙는다는 보고로 드러났다.
+    """
+    from tab_pdf import build, extract
+
+    ir = extract.extract_ir(str(PDF))
+    out = tmp_path / "bound.gp5"
+    build.write_gp5(build.build_song(ir, lyric_mode="row"), str(out))
+
+    song = gp.parse(str(out), encoding="cp949")
+    assert song.lyrics.trackChoice >= 1, "가사가 어느 트랙에도 묶이지 않았다"
+    assert song.lyrics.trackChoice <= len(song.tracks)
+
+
+@needs_pdf
+def test_beat_mode_places_every_syllable_on_its_own_beat(tmp_path):
+    """`beat` 모드는 x 좌표 배정을 그대로 박는다 — GP 의 분배 규칙을 안 탄다.
+
+    `row` 모드는 텍스트 덩어리를 넘기고 GP 가 음표에 분배하는데, 그 규칙이
+    문서화돼 있지 않아 음절이 밀릴 수 있다. 이 모드는 그 불확실성이 없다.
+    """
+    from tab_pdf import build, extract
+
+    ir = extract.extract_ir(str(PDF))
+    out = tmp_path / "beat.gp5"
+    build.write_gp5(build.build_song(ir, lyric_mode="beat"), str(out))
+
+    song = gp.parse(str(out), encoding="cp949")
+    beats = [b for m in song.tracks[0].measures for v in m.voices for b in v.beats]
+    texts = [b.text for b in beats if b.text]
+    assert sum(len(t) for t in texts) == 317, "왕복에서 가사가 유실됐다"
+    # 배정된 beat 수와 텍스트 수가 같아야 한다 — 하나라도 뭉치면 위치가 틀어진다
+    assigned = [b for m in ir["measures"] for b in m["beats"] if b["lyric"]]
+    assert len(texts) == len(assigned)
+    # 두 모드가 섞이면 GP 가 가사를 두 번 그린다
+    assert not any(line.lyrics for line in song.lyrics.lines)
 
 
 def test_lyric_extraction_excludes_music_glyphs():

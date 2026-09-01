@@ -3,7 +3,8 @@
 import guitarpro as gp
 from guitarpro.models import (
     Beat, BeatStatus, BeatStrokeDirection, Chord, Duration, GuitarString,
-    Measure, MeasureHeader, Note, NoteType, Song, TimeSignature, Track, Voice,
+    Measure, MeasureHeader, Note, NoteType, SlideType, Song, TimeSignature,
+    Track, Voice,
 )
 
 from . import chords
@@ -33,6 +34,18 @@ def _apply_stroke(beat: Beat, stroke: str | None) -> None:
         return
     beat.effect.stroke.direction = direction
     beat.effect.stroke.value = STROKE_VALUE
+
+
+def _apply_techniques(beat: Beat, techniques: list[dict]) -> None:
+    """연주법을 해당 줄의 노트에 붙인다. GP 는 해머온/풀오프를 한 플래그로 다룬다."""
+    for technique in techniques:
+        for note in beat.notes:
+            if note.string != technique["string"]:
+                continue
+            if technique["kind"] == "hammer":
+                note.effect.hammer = True
+            elif technique["kind"] == "slide":
+                note.effect.slides = [SlideType.shiftSlideTo]
 
 
 def _make_chord_diagram(name: str) -> Chord | None:
@@ -98,6 +111,7 @@ def build_song(ir: dict) -> Song:
                     velocity=DEFAULT_VELOCITY, type=NoteType.normal,
                 ))
             _apply_stroke(beat, beat_ir.get("stroke"))
+            _apply_techniques(beat, beat_ir.get("techniques", ()))
             chord_name = beat_ir.get("chord")
             if chord_name and chord_name != previous_chord:
                 diagram = _make_chord_diagram(chord_name)

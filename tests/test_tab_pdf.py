@@ -236,3 +236,31 @@ def test_gp5_has_chord_diagrams_at_chord_changes(tmp_path):
     sample = next(d for d in diagrams if d.name == "Cadd9")
     expected = dict(chords.VOICINGS["Cadd9"])
     assert list(sample.strings) == [expected.get(i + 1, -1) for i in range(6)]
+
+
+@needs_pdf
+def test_techniques_land_on_the_right_string(tmp_path):
+    """H/P/S 표기가 직전 노트의 줄에 붙어야 한다.
+
+    표기 자체의 y 는 대상 줄과 무관하다 — 실측에서 표기 y 는 5·3·4·1번줄로
+    흩어지는데 대상은 전부 2번줄이었다. 직전 프렛 노트의 줄을 써야 한다.
+    """
+    from tab_pdf import build, extract
+
+    ir = extract.extract_ir(str(PDF))
+    techniques = [(m["index"], t)
+                  for m in ir["measures"] for b in m["beats"]
+                  for t in b.get("techniques", ())]
+    assert len(techniques) == 6, f"연주법 {len(techniques)}개"
+    assert all(t["string"] == 2 for _, t in techniques), "전부 2번줄이어야 한다"
+    kinds = sorted(t["kind"] for _, t in techniques)
+    assert kinds == ["hammer"] * 4 + ["slide"] * 2
+
+    out = tmp_path / "tech.gp5"
+    build.write_gp5(build.build_song(ir), str(out))
+    song = gp.parse(str(out), encoding="cp949")
+    notes = [n for m in song.tracks[0].measures for v in m.voices
+             for b in v.beats for n in b.notes]
+    assert sum(1 for n in notes if n.effect.hammer) == 4
+    assert sum(1 for n in notes if n.effect.slides) == 2
+    assert all(n.string == 2 for n in notes if n.effect.hammer or n.effect.slides)

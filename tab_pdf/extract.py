@@ -47,8 +47,11 @@ SMUFL_SLASH_RANGE = (0xE100, 0xE10F)            # SMuFL Slash noteheads
 SMUFL_ARTICULATION_RANGE = (0xE4A0, 0xE4BF)     # 악센트 등 — 반영하지 않고 경고
 SMUFL_TIMESIG_DIGIT_BASE = 0xE080               # E080='0' … E089='9'
 SMUFL_TIMESIG_DIGIT_RANGE = (0xE080, 0xE089)
-# 기타 연주법 약어 (해머온/풀오프/슬라이드) — 반영하지 않고 경고
-TECHNIQUE_LETTERS = frozenset("HPS")
+# 기타 연주법 약어. 표기는 같은 줄의 두 음 사이에 놓이고, 효과는 앞 음이 갖는다.
+# GP 는 해머온/풀오프를 한 플래그로 다룬다.
+TECHNIQUE_KINDS = {"H": "hammer", "P": "hammer", "S": "slide"}
+# 표기에 딸린 방향 주석 문자 ('S.D' 의 '.', 'D') — 별도 의미로 쓰지 않는다
+TECHNIQUE_ANNOTATION = frozenset(".DU")
 SMUFL_REST_RANGE = (0xE4E0, 0xE4FF)             # 타브 대역에 나오면 경고
 SMUFL_STROKE_DOWN = ""
 SMUFL_STROKE_UP = ""
@@ -242,6 +245,32 @@ def _detect_time_signature(geo, system: geometry.System) -> tuple[int, int] | No
     return None
 
 
+def _techniques(geo, system, x0, x1, fret_glyphs, letter_index) -> list[dict]:
+    """연주법 표기를 (x, 대상 줄, 종류) 로 뽑는다.
+
+    표기의 y 는 대상 줄과 무관하다 (실측: 표기 y 는 5·3·4·1번줄로 흩어지는데
+    대상은 전부 2번줄이었다). 표기 x 직전의 프렛 노트가 효과를 갖는다.
+    """
+    result = []
+    for glyph in geo.glyphs:
+        if not (x0 <= glyph.x < x1) or not _in_tab_band(glyph, system):
+            continue
+        kind = TECHNIQUE_KINDS.get(glyph.char)
+        if kind is None or glyph.size > MAX_FRET_GLYPH_SIZE:
+            continue
+        if _has_adjacent_letter(letter_index, glyph):
+            continue                    # 주석 문장 속 글자다
+        before = [f for f in fret_glyphs if f.x <= glyph.x]
+        if not before:
+            continue
+        source = max(before, key=lambda f: f.x)
+        string = _snap_to_string(source.y, system.tab_ys)
+        if string is None:
+            continue
+        result.append({"x": source.x, "string": string, "kind": kind})
+    return result
+
+
 def _cluster(xs: list[float]) -> list[float]:
     clustered: list[float] = []
     for x in sorted(xs):
@@ -260,12 +289,13 @@ def _classify(fret_glyphs, slash_xs) -> str:
     return "empty"
 
 
-def _warn_unsupported(geo, system, x0, x1, index, warn, letter_index) -> None:
+def _warn_unsupported(geo, system, x0, x1, index, warn) -> None:
     """반영하지 못하는 표기를 종류별 1건으로 집계해 남긴다. 조용히 버리지 않는다.
 
     - 타브 대역 쉼표: x간격 기반 음길이를 틀어뜨린다
     - 악센트 등 아티큘레이션: 음정·리듬에는 영향 없지만 표현이 사라진다
-    - H/P/S 연주법 약어: 해머온·풀오프·슬라이드가 사라진다
+
+    H/P/S 연주법은 `_techniques` 가 반영하므로 여기서 세지 않는다.
     """
     counts: dict[str, int] = {}
     for glyph in geo.glyphs:
@@ -275,9 +305,6 @@ def _warn_unsupported(geo, system, x0, x1, index, warn, letter_index) -> None:
             counts["쉼표"] = counts.get("쉼표", 0) + 1
         elif _in_range(glyph.char, SMUFL_ARTICULATION_RANGE):
             counts["아티큘레이션"] = counts.get("아티큘레이션", 0) + 1
-        elif (glyph.char in TECHNIQUE_LETTERS
-              and not _has_adjacent_letter(letter_index, glyph)):
-            counts[f"연주법 {glyph.char}"] = counts.get(f"연주법 {glyph.char}", 0) + 1
     for label, count in sorted(counts.items()):
         detail = f"{label} {count}개를 반영하지 못했다"
         if label == "쉼표":
@@ -306,9 +333,10 @@ def _build_measure(geo, system, bounds, index, tokens, warn,
     fret_glyphs = _fret_glyphs(geo, system, x0, x1, letter_index)
     slash_xs = _slash_xs(geo, system, x0, x1)
     kind = _classify(fret_glyphs, slash_xs)
-    _warn_unsupported(geo, system, x0, x1, index, warn, letter_index)
+    _warn_unsupported(geo, system, x0, x1, index, warn)
     _warn_kerned_digit_pairs(fret_glyphs, system, index, warn)
 
+    techniques = _techniques(geo, system, x0, x1, fret_glyphs, letter_index)
     beat_xs = _cluster([g.x for g in fret_glyphs] + slash_xs)
     measure = {"index": index, "time_sig": list(time_sig),
                "kind": kind, "beats": []}
@@ -352,6 +380,10 @@ def _build_measure(geo, system, bounds, index, tokens, warn,
             "dotted": duration.dotted,
             "chord": chord,
             "stroke": stroke,
+            "techniques": [
+                {"string": t["string"], "kind": t["kind"]} for t in techniques
+                if abs(t["x"] - beat_x) <= BEAT_CLUSTER_TOLERANCE
+            ],
             "notes": notes,
         })
     return measure

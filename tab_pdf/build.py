@@ -3,7 +3,8 @@
 import guitarpro as gp
 from guitarpro.models import (
     Beat, BeatStatus, BeatStrokeDirection, BendEffect, BendPoint, BendType,
-    Chord, Duration, GuitarString, LyricLine, Lyrics, Measure, MeasureHeader,
+    Chord, Duration, GuitarString, KeySignature, LyricLine, Lyrics, Measure,
+    MeasureHeader,
     NaturalHarmonic, Note, NoteType, SlideType, Song, TimeSignature, Track,
     Voice,
 )
@@ -49,6 +50,22 @@ def _apply_stroke(beat: Beat, stroke: str | None) -> None:
         return
     beat.effect.stroke.direction = direction
     beat.effect.stroke.value = STROKE_VALUE
+
+
+def _key_signature(name: str) -> KeySignature | None:
+    """'C'·'Am'·'F#' 같은 조성 표기를 GP5 KeySignature 로. 모르면 None.
+
+    단조는 나란한장조와 조표가 같다 — GP5 도 조표만 담으므로 그렇게 눕힌다.
+    """
+    text = (name or "").strip().replace("♯", "#").replace("♭", "b")
+    if not text:
+        return None
+    relative_major = {"Am": "C", "Em": "G", "Bm": "D", "F#m": "A", "C#m": "E",
+                      "G#m": "B", "D#m": "F#", "Dm": "F", "Gm": "Bb",
+                      "Cm": "Eb", "Fm": "Ab", "Bbm": "Db"}
+    text = relative_major.get(text, text)
+    suffix = {"#": "Sharp", "b": "Flat"}.get(text[1:2], "")
+    return getattr(KeySignature, f"{text[0]}Major{suffix}", None)
 
 
 def _first_lyric_measure(ir: dict) -> int | None:
@@ -170,13 +187,15 @@ def _make_chord_diagram(name: str,
     )
 
 
-def _make_header(measure_ir: dict) -> MeasureHeader:
+def _make_header(measure_ir: dict, key: KeySignature | None) -> MeasureHeader:
     header = MeasureHeader(number=measure_ir["index"] + 1)
     numerator, denominator = measure_ir["time_sig"]
     signature = TimeSignature()
     signature.numerator = numerator
     signature.denominator.value = denominator
     header.timeSignature = signature
+    if key is not None:
+        header.keySignature = key
     return header
 
 
@@ -188,8 +207,17 @@ def build_song(ir: dict, *, lyric_mode: str = DEFAULT_LYRIC_MODE) -> Song:
     if lyric_mode not in LYRIC_MODES:
         raise ValueError(f"lyric_mode 는 {' | '.join(LYRIC_MODES)} 중 하나여야 합니다: "
                          f"{lyric_mode!r}")
+    credits = ir.get("credits", {})
     song = Song(title=ir.get("title", ""), artist=ir.get("artist", ""),
-                tempo=ir.get("tempo", 80))
+                tempo=ir.get("tempo", 80),
+                # 악보 머리글에서 읽은 것 — 버리면 크레디트가 사라진다
+                subtitle=ir.get("rhythm", ""),
+                words=credits.get("words", ""),
+                music=credits.get("music", ""),
+                tab=credits.get("arranger", ""))
+    key = _key_signature(ir.get("key", ""))
+    if key is not None:
+        song.key = key
     song.tracks.clear()
     song.measureHeaders.clear()
 
@@ -201,7 +229,7 @@ def build_song(ir: dict, *, lyric_mode: str = DEFAULT_LYRIC_MODE) -> Song:
 
     previous_chord = None
     for measure_ir in ir["measures"]:
-        header = _make_header(measure_ir)
+        header = _make_header(measure_ir, key)
         song.measureHeaders.append(header)
 
         measure = Measure(track, header)

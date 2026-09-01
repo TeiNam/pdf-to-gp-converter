@@ -302,3 +302,20 @@ def test_cli_rejects_missing_and_non_tab_pdf(tmp_path):
     doc.save(str(plain))
     doc.close()
     assert convert.main([str(plain)]) == 2
+
+
+@pytest.mark.parametrize("name, expected", [
+    ("C", "CMajor"),
+    ("G", "GMajor"),
+    ("F#", "FMajorSharp"),
+    ("Bb", "BMajorFlat"),
+    ("Am", "CMajor"),      # 단조는 나란한장조와 조표가 같다
+    ("Em", "GMajor"),
+    ("", None),
+    ("Xq", None),
+])
+def test_key_signature_parsing(name, expected):
+    from tab_pdf import build
+
+    got = build._key_signature(name)
+    assert (got.name if got is not None else None) == expected

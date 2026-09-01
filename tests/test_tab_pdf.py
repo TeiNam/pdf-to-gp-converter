@@ -402,3 +402,60 @@ def test_chord_row_carries_assembled_names_not_loose_letters():
     # 코드 표기가 없는 마디에도 앞에서 이어지는 코드가 있어야 한다
     covered = sum(1 for m in ir["measures"] if m["chord_in_effect"])
     assert covered > len(ir["measures"]) // 2, f"{covered}/{len(ir['measures'])} 마디만 커버"
+
+
+@needs_pdf
+def test_header_credits_key_and_rhythm_are_read():
+    """머리글은 버리면 그대로 사라진다 — 조판이 라벨과 값을 붙여 쓴다.
+
+    실측: '작사정중식'·'노래중식이'·'Key:C'·'Slow16Beat' 처럼 공백이 없다.
+    """
+    from tab_pdf import extract
+
+    ir = extract.extract_ir(str(PDF))
+    assert ir["artist"] == "중식이", "노래 항목에서 가수를 못 읽었다"
+    assert ir["key"] == "C"
+    assert "16" in ir["rhythm"] and "low" in ir["rhythm"]
+    assert ir["credits"] == {"words": "정중식", "music": "정중식",
+                            "arranger": "이재범"}
+
+
+@needs_pdf
+def test_explicit_artist_wins_over_the_header():
+    """커버 가수를 넣고 싶을 때 머리글이 덮어쓰면 안 된다."""
+    from tab_pdf import extract
+
+    ir = extract.extract_ir(str(PDF), artist="황가람")
+    assert ir["artist"] == "황가람"
+
+
+@needs_pdf
+def test_guessed_tempo_is_flagged_but_a_given_one_is_not():
+    """이 악보에는 BPM 표기가 없다 (♩=N·메트로놈 글리프 0개).
+
+    추측한 값을 조용히 내보내면 사용자가 악보에서 읽은 값이라고 믿는다.
+    """
+    from tab_pdf import extract
+
+    guessed = extract.extract_ir(str(PDF))
+    kinds = [w["kind"] for w in guessed["warnings"]]
+    assert "tempo_guessed" in kinds
+    assert guessed["tempo"] == extract.DEFAULT_TEMPO
+
+    given = extract.extract_ir(str(PDF), tempo=74)
+    assert "tempo_guessed" not in [w["kind"] for w in given["warnings"]]
+    assert given["tempo"] == 74
+
+
+@needs_pdf
+def test_header_fields_reach_the_gp5():
+    from tab_pdf import build, extract
+    import guitarpro
+
+    ir = extract.extract_ir(str(PDF), tempo=74)
+    song = build.build_song(ir)
+    assert (song.artist, song.words, song.music, song.tab) == (
+        "중식이", "정중식", "정중식", "이재범")
+    assert song.key is guitarpro.KeySignature.CMajor
+    assert song.measureHeaders[0].keySignature is guitarpro.KeySignature.CMajor
+    assert song.tempo == 74

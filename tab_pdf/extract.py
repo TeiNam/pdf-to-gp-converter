@@ -66,6 +66,19 @@ PRIVATE_USE_RANGE = smufl.PRIVATE_USE
 # 늘임표 — 앞 음절이 다음 음까지 이어진다는 표시. 자기 음 위치를 차지하지만
 # GP5 가사에는 담을 자리가 없어 반영하지 않는다.
 LYRIC_HOLD_MARK = "-"
+# 악보 머리글의 한국어 항목 라벨 → IR 필드. 글리프 스트림에 공백이 없어 라벨을
+# 접두어로 떼어낸다 ('노래중식이' → 노래 + 중식이).
+HEADER_LABELS = {
+    "노래": "artist",
+    "작사": "words",
+    "작곡": "music",
+    "편곡": "arranger",
+    "연주": "performer",
+}
+KEY_LABEL = "Key:"
+# 조성 표기가 붙는 리듬·연주 지시 줄을 알아보는 낱말. 라벨이 없는 자유 문구라
+# 내용으로 판정한다 — 'Slow 16Beat', '16 Beat', 'Shuffle' 따위.
+RHYTHM_WORDS = ("beat", "shuffle", "swing", "slow", "waltz", "ballad", "bounce")
 SMUFL_REST_RANGE = smufl.REST                   # 타브 대역에 나오면 경고
 SMUFL_STROKE_DOWN = ""
 SMUFL_STROKE_UP = ""
@@ -547,6 +560,46 @@ def _build_measure(geo, system, bounds, index, tokens, warn,
     return measure
 
 
+def _header_lines(geo, system) -> list[str]:
+    """첫 시스템 위쪽 머리글을 baseline 별 한 줄씩 돌려준다. 위→아래 순서."""
+    above = sorted((g for g in geo.glyphs if g.y < system.melody_ys[0]),
+                   key=lambda g: (round(g.y, 1), g.x))
+    lines, current, previous_y = [], [], None
+    for glyph in above:
+        y = round(glyph.y, 1)
+        if previous_y is not None and y != previous_y:
+            lines.append("".join(current))
+            current = []
+        current.append(glyph.char)
+        previous_y = y
+    if current:
+        lines.append("".join(current))
+    return lines
+
+
+def _header_fields(geo, system) -> dict[str, str]:
+    """머리글에서 크레디트·조성·리듬 표기를 뽑는다.
+
+    조판이 항목을 라벨+값으로 붙여 쓰므로 (`작사정중식`) 라벨을 접두어로 떼어낸다.
+    라벨이 없는 리듬 지시(`Slow 16Beat`)는 낱말로 알아본다.
+    """
+    fields: dict[str, str] = {}
+    for line in _header_lines(geo, system):
+        text = line.strip()
+        if not text:
+            continue
+        for label, key in HEADER_LABELS.items():
+            if text.startswith(label) and len(text) > len(label):
+                fields.setdefault(key, text[len(label):].strip())
+                break
+        else:
+            if text.startswith(KEY_LABEL):
+                fields.setdefault("key", text[len(KEY_LABEL):].strip())
+            elif any(word in text.lower() for word in RHYTHM_WORDS):
+                fields.setdefault("rhythm", text)
+    return fields
+
+
 def extract_ir(pdf_path: str, tempo: int | None = None,
                title: str | None = None, artist: str | None = None) -> dict:
     """PDF 전체를 IR 로 만든다.
@@ -556,6 +609,7 @@ def extract_ir(pdf_path: str, tempo: int | None = None,
     """
     warn = _Warnings()
     measures: list[dict] = []
+    header: dict[str, str] = {}
     saw_text = False
 
     time_sig = DEFAULT_TIME_SIG
@@ -577,6 +631,8 @@ def extract_ir(pdf_path: str, tempo: int | None = None,
                         warn.add(len(measures), "time_signature",
                                  f"{detected[0]}/{detected[1]} 박자를 감지했다 "
                                  f"— 이 경로는 실제 악보로 검증되지 않았다")
+                if not measures:
+                    header.update(_header_fields(geo, system))
                 tokens = _chord_tokens(geo, system, all_bounds[-1][1] + 1.0)
                 syllables = _lyric_syllables(
                     geo, system, len(measures), warn)
@@ -595,11 +651,25 @@ def extract_ir(pdf_path: str, tempo: int | None = None,
     if not measures:
         raise NotATabPdf(f"{pdf_path}: 6줄 타브 staff 를 찾지 못했다")
 
+    if tempo is None:
+        # 이 악보에는 BPM 표기(♩=N·메트로놈 글리프)가 아예 없다. 리듬 지시
+        # ('Slow 16Beat') 는 세분 표기라 템포가 아니다 — 추측한 값을 조용히
+        # 내보내면 사용자가 악보에서 읽은 값이라고 믿는다.
+        warn.add(0, "tempo_guessed",
+                 f"악보에 BPM 표기가 없어 {DEFAULT_TEMPO} 을 넣었다"
+                 + (f" (리듬 지시: {header['rhythm']!r})" if "rhythm" in header else "")
+                 + " — 음원과 맞추려면 --tempo 로 지정할 것")
+
     stem = os.path.splitext(os.path.basename(pdf_path))[0]
     return {
         "title": title if title is not None else stem,
-        "artist": artist if artist is not None else "",
+        "artist": artist if artist is not None else header.get("artist", ""),
         "tempo": tempo or DEFAULT_TEMPO,
+        "tempo_source": "지정" if tempo else "기본값(악보에 표기 없음)",
+        "credits": {key: value for key, value in header.items()
+                    if key in ("words", "music", "arranger", "performer")},
+        "key": header.get("key", ""),
+        "rhythm": header.get("rhythm", ""),
         "tuning": list(STANDARD_TUNING),
         "measures": measures,
         "warnings": warn.items,

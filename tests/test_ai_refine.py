@@ -91,6 +91,31 @@ def test_beat_wide_techniques_may_omit_the_string(kind):
     assert len(outcome.applied) == 1, _reasons(outcome)
 
 
+@pytest.mark.parametrize("kind", sorted(corrections.BEAT_ONLY_TECHNIQUES))
+def test_staff_level_articulations_refuse_a_guessed_string(kind):
+    """악센트는 대상 줄이라는 개념이 없다 — 받아주면 모델이 하나를 짐작한다."""
+    ir = _ir(_measure(0, [_beat([(6, 3), (2, 5)])]))
+    _, outcome = corrections.apply_corrections(ir, [
+        {"op": "technique", "measure": 0, "beat": 0, "string": 2, "kind": kind}])
+
+    assert not outcome.applied
+    assert "박 단위 표기" in _reasons(outcome)[0]
+
+
+@pytest.mark.parametrize("kind",
+                         sorted(corrections.BEAT_TECHNIQUES
+                                - corrections.BEAT_ONLY_TECHNIQUES))
+def test_per_note_techniques_still_accept_a_string(kind):
+    """한 줄 뮤트('x')나 한 음 스타카토는 실제로 쓰이는 표기다."""
+    ir = _ir(_measure(0, [_beat([(6, 3), (2, 5)])]))
+    result, outcome = corrections.apply_corrections(ir, [
+        {"op": "technique", "measure": 0, "beat": 0, "string": 6, "kind": kind}])
+
+    assert len(outcome.applied) == 1, _reasons(outcome)
+    assert result["measures"][0]["beats"][0]["techniques"] == [
+        {"string": 6, "kind": kind}]
+
+
 def test_technique_on_an_empty_beat_is_rejected():
     ir = _ir(_measure(0, [_beat()]))
     _, outcome = corrections.apply_corrections(ir, [
@@ -310,19 +335,41 @@ def test_chord_without_a_voicing_is_rejected_because_gp5_shows_nothing():
     assert "표시할 수 없다" in _reasons(outcome)[0]
 
 
-def test_orphaned_technique_is_pruned_when_the_chord_replaces_the_notes():
-    """음이 바뀌어 붙일 곳이 없어진 연주법을 '반영했다' 고 보고하면 거짓이다."""
+@pytest.mark.parametrize("order", ["technique_first", "chord_first"])
+def test_technique_is_checked_against_the_notes_the_chord_leaves_behind(order):
+    """코드를 먼저 적용하므로 입력 순서가 결과를 바꾸지 않는다.
+
+    G 에는 6번줄이 있고 Am 에는 없다. 순서에 따라 연주법이 살아남으면 같은 입력이
+    다른 악보를 만든다.
+    """
     ir = _ir(_measure(0, [_beat(list(chords.VOICINGS["G"]), chord="G",
                                 from_chord=True)]))
-    result, outcome = corrections.apply_corrections(ir, [
-        {"op": "technique", "measure": 0, "beat": 0, "string": 6,
-         "kind": "hammer"},           # G 에는 6번줄이 있고 Am 에는 없다
-        {"op": "chord", "measure": 0, "beat": 0, "name": "Am"}])
+    technique = {"op": "technique", "measure": 0, "beat": 0, "string": 6,
+                 "kind": "hammer"}
+    chord = {"op": "chord", "measure": 0, "beat": 0, "name": "Am"}
+    proposals = ([technique, chord] if order == "technique_first"
+                 else [chord, technique])
+    result, outcome = corrections.apply_corrections(ir, proposals)
 
     assert [c["op"] for c in outcome.applied] == ["chord"]
-    assert any("붙일 음이 없어졌다" in entry["reason"]
-               for entry in outcome.rejected)
+    assert "인데 6 을 가리켰다" in _reasons(outcome)[0]
     assert result["measures"][0]["beats"][0]["techniques"] == []
+
+
+@pytest.mark.parametrize("order", ["technique_first", "chord_first"])
+def test_technique_survives_when_the_chord_supplies_the_string(order):
+    ir = _ir(_measure(0, [_beat(list(chords.VOICINGS["Am"]), chord="Am",
+                                from_chord=True)]))
+    technique = {"op": "technique", "measure": 0, "beat": 0, "string": 6,
+                 "kind": "hammer"}
+    chord = {"op": "chord", "measure": 0, "beat": 0, "name": "G"}
+    proposals = ([technique, chord] if order == "technique_first"
+                 else [chord, technique])
+    result, outcome = corrections.apply_corrections(ir, proposals)
+
+    assert len(outcome.applied) == 2, _reasons(outcome)
+    assert result["measures"][0]["beats"][0]["techniques"] == [
+        {"string": 6, "kind": "hammer"}]
 
 
 def test_technique_survives_on_a_beat_filled_by_a_new_voicing():
@@ -377,6 +424,40 @@ def test_voicing_never_overwrites_a_hand_verified_one():
 
     assert not outcome.applied
     assert "검증" in _reasons(outcome)[0]
+
+
+def test_voicing_must_actually_sound_the_named_chord():
+    """이름만 믿으면 악보가 조용히 틀린다 — Bm7 에 개방현 6개는 Bm7 이 아니다."""
+    _, outcome = corrections.apply_corrections(
+        _ir(), [{"op": "voicing", "name": "Bm7", "frets": [0, 0, 0, 0, 0, 0]}])
+
+    assert not outcome.applied
+    assert "없는 음을 낸다" in _reasons(outcome)[0]
+
+
+def test_voicing_may_omit_chord_tones():
+    """기타 보이싱은 코드 톤을 빼먹는 일이 흔하다 — 그건 통과해야 한다."""
+    _, outcome = corrections.apply_corrections(
+        _ir(), [{"op": "voicing", "name": "Bm7",
+                 "frets": [-1, -1, -1, 4, 2, -1]}])       # D, B 만
+
+    assert len(outcome.applied) == 1, _reasons(outcome)
+
+
+def test_unverifiable_chord_quality_is_not_rejected():
+    """표에 없는 성질은 '틀렸다' 가 아니라 '판정할 수 없다' 다."""
+    assert chords.pitch_classes("Cmystic13alt") is None
+    _, outcome = corrections.apply_corrections(
+        _ir(), [{"op": "voicing", "name": "Cmystic13alt",
+                 "frets": [3, 3, 3, -1, -1, -1]}])
+
+    assert len(outcome.applied) == 1, _reasons(outcome)
+
+
+def test_hand_verified_voicings_pass_their_own_pitch_check():
+    """표에 든 5개가 검증기를 통과하지 못하면 검증기나 표가 틀렸다."""
+    for name, voicing in chords.VOICINGS.items():
+        assert chords.voicing_matches(name, voicing, STANDARD_TUNING) is True, name
 
 
 @pytest.mark.parametrize("frets, hint", [

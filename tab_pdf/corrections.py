@@ -40,11 +40,15 @@ BEAT_TECHNIQUES = frozenset({
     "palm_mute",
     "let_ring",
     "staccato",
-    "dead",             # 뮤트 노트 'x' — 6현 뮤트 스트럼은 박 전체다
+    "dead",             # 뮤트 노트 'x' — 한 줄에도, 6현 스트럼 전체에도 쓴다
     "accent",
     "heavy_accent",
     "ghost",
 })
+# 이 둘은 악보 위·아래에 그려지는 표기라 대상 줄이라는 개념이 아예 없다.
+# `string` 을 받아주면 모델이 화음 중 하나를 짐작해 고른다 — 실측에서 악센트 44개가
+# 1·3·4·5·6번줄로 흩어져 스트럼 6음 중 1음만 악센트가 됐다.
+BEAT_ONLY_TECHNIQUES = frozenset({"accent", "heavy_accent"})
 TECHNIQUE_KINDS = STRING_TECHNIQUES | BEAT_TECHNIQUES
 
 OPS = ("technique", "lyric", "chord", "voicing")
@@ -117,6 +121,9 @@ def _apply_technique(measures: dict, correction: dict) -> str | None:
             return (f"{kind} 는 한 줄에만 걸리는 표기다 — string 을 지정해야 한다 "
                     f"(박 전체로 걸 수 있는 것: {', '.join(sorted(BEAT_TECHNIQUES))})")
     else:
+        if kind in BEAT_ONLY_TECHNIQUES:
+            return (f"{kind} 는 악보 위·아래에 그려지는 박 단위 표기다 — string 을 "
+                    f"짐작해서 붙이면 화음 중 한 음만 표시된다")
         string, reason = _index_of(string, "string")
         if reason:
             return reason
@@ -221,14 +228,19 @@ def _apply_voicing(ir: dict, correction: dict) -> str | None:
     reason = _validate_frets(correction.get("frets"))
     if reason:
         return reason
+    proposed = [[string, fret]
+                for string, fret in enumerate(correction["frets"], start=1)
+                if fret != UNUSED_STRING]
+    # 이름과 프렛이 맞는지 음정으로 확인한다. 이름만 믿으면 악보가 조용히 틀린다
+    if chords.voicing_matches(name, proposed, ir["tuning"]) is False:
+        extra = sorted(chords.voicing_pitch_classes(proposed, ir["tuning"])
+                       - chords.pitch_classes(name))
+        return (f"이 프렛은 {name} 에 없는 음을 낸다 (반음값 {extra}) "
+                f"— 코드명과 보이싱이 맞지 않는다")
     voicing = ir.setdefault("ai_voicings", {})
     if name in voicing:
         return f"{name} 보이싱을 이미 받았다"
-    voicing[name] = [
-        [string, fret]
-        for string, fret in enumerate(correction["frets"], start=1)
-        if fret != UNUSED_STRING
-    ]
+    voicing[name] = proposed
     return None
 
 
@@ -274,32 +286,6 @@ def _reject(correction: dict, reason: str) -> dict:
     return {"correction": correction, "reason": reason}
 
 
-def _prune_orphan_techniques(ir: dict) -> list[dict]:
-    """음이 사라진 줄에 남은 연주법을 걷어낸다.
-
-    코드명 보정이 `from_chord` beat 의 음을 새 보이싱으로 갈아치우면, 먼저 적용된
-    연주법이 없는 줄을 가리킬 수 있다. build 는 그런 연주법을 조용히 무시하므로
-    "반영했다" 고 보고해두면 거짓이 된다.
-    """
-    orphans = []
-    for measure in ir["measures"]:
-        for position, beat in enumerate(measure["beats"]):
-            techniques = beat.get("techniques")
-            if not techniques:
-                continue
-            strings = {note["string"] for note in beat["notes"]}
-            kept = [t for t in techniques
-                    if t.get("string") is None or t["string"] in strings]
-            if len(kept) == len(techniques):
-                continue
-            for technique in techniques:
-                if technique not in kept:
-                    orphans.append({"measure": measure["index"],
-                                    "beat": position, **technique})
-            beat["techniques"] = kept
-    return orphans
-
-
 def apply_corrections(ir: dict, proposals: list[dict]) -> tuple[dict, Outcome]:
     """보정안을 검증해 새 IR 을 만든다. 원본은 그대로 둔다.
 
@@ -325,12 +311,19 @@ def apply_corrections(ir: dict, proposals: list[dict]) -> tuple[dict, Outcome]:
          else applied.append(correction))
     realized = _realize_chord_beats(result)
 
-    for correction in (c for c in others if c.get("op") != "voicing"):
+    # chord 를 technique 보다 먼저 본다 — 코드명 보정이 beat 에 음을 만들어줄 수
+    # 있어서, 순서가 뒤면 같은 입력이 순서에 따라 다른 결과를 낸다.
+    for correction in (c for c in others if c.get("op") == "chord"):
+        reason = _apply_chord(result, measures, correction, chord_claims)
+        (rejected.append(_reject(correction, reason)) if reason
+         else applied.append(correction))
+
+    for correction in others:
         op = correction.get("op")
+        if op in ("voicing", "chord"):
+            continue
         if op == "technique":
             reason = _apply_technique(measures, correction)
-        elif op == "chord":
-            reason = _apply_chord(result, measures, correction, chord_claims)
         else:
             reason = f"op {op!r} 를 모른다. {' | '.join(OPS)} 중 하나여야 한다"
         if reason:
@@ -354,20 +347,7 @@ def apply_corrections(ir: dict, proposals: list[dict]) -> tuple[dict, Outcome]:
             applied.extend(group)
 
     realized += _realize_chord_beats(result)
-    for orphan in _prune_orphan_techniques(result):
-        rejected.append(_reject(
-            {"op": "technique", **orphan},
-            "코드명 보정으로 음이 바뀌어 이 줄에 붙일 음이 없어졌다"))
-        applied = [c for c in applied if not _same_technique(c, orphan)]
     return result, Outcome(tuple(applied), tuple(rejected), realized)
-
-
-def _same_technique(correction: dict, orphan: dict) -> bool:
-    return (correction.get("op") == "technique"
-            and correction.get("measure") == orphan["measure"]
-            and correction.get("beat") == orphan["beat"]
-            and correction.get("string") == orphan["string"]
-            and correction.get("kind") == orphan["kind"])
 
 
 def _sort_proposals(proposals: list) -> tuple[list[dict], dict, list[dict]]:

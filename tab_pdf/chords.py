@@ -34,6 +34,97 @@ def name_fits(name: str, encoding: str = "cp949") -> bool:
     return len(name.strip().encode(encoding, errors="replace")) <= MAX_NAME_BYTES
 
 
+# 근음 이름 → 반음 값 (C=0). 이명동음은 같은 값으로 모인다.
+_ROOTS = {"C": 0, "D": 2, "E": 4, "F": 5, "G": 7, "A": 9, "B": 11}
+SEMITONES = 12
+
+# 코드 성질 → 근음 기준 반음 간격. 긴 이름이 먼저 매치되도록 정렬해서 쓴다
+# ('m7b5' 가 'm7' 로 잘리면 안 된다).
+_QUALITIES: dict[str, tuple[int, ...]] = {
+    "": (0, 4, 7),
+    "5": (0, 7),
+    "6": (0, 4, 7, 9),
+    "6/9": (0, 2, 4, 7, 9),
+    "7": (0, 4, 7, 10),
+    "7b5": (0, 4, 6, 10),
+    "7#5": (0, 4, 8, 10),
+    "7b9": (0, 1, 4, 7, 10),
+    "7#9": (0, 3, 4, 7, 10),
+    "7sus4": (0, 5, 7, 10),
+    "9": (0, 2, 4, 7, 10),
+    "11": (0, 2, 4, 5, 7, 10),
+    "13": (0, 2, 4, 7, 9, 10),
+    "add9": (0, 2, 4, 7),
+    "aug": (0, 4, 8),
+    "+": (0, 4, 8),
+    "dim": (0, 3, 6),
+    "dim7": (0, 3, 6, 9),
+    "m": (0, 3, 7),
+    "m6": (0, 3, 7, 9),
+    "m7": (0, 3, 7, 10),
+    "m7b5": (0, 3, 6, 10),
+    "m9": (0, 2, 3, 7, 10),
+    "madd9": (0, 2, 3, 7),
+    "mmaj7": (0, 3, 7, 11),
+    "maj7": (0, 4, 7, 11),
+    "maj9": (0, 2, 4, 7, 11),
+    "min": (0, 3, 7),
+    "sus2": (0, 2, 7),
+    "sus4": (0, 5, 7),
+}
+_QUALITY_ORDER = tuple(sorted(_QUALITIES, key=len, reverse=True))
+
+
+def pitch_classes(name: str) -> frozenset[int] | None:
+    """코드명이 쓰는 음(반음 값 집합). 성질을 모르면 None.
+
+    None 은 "틀렸다" 가 아니라 "판정할 수 없다" 다 — 호출자는 검증을 건너뛴다.
+    표에 없는 성질을 틀렸다고 처리하면 멀쩡한 코드를 거부한다.
+    """
+    text = name.strip()
+    if not text or text[0] not in _ROOTS:
+        return None
+    root = _ROOTS[text[0]]
+    rest = text[1:]
+    if rest[:1] == "#":
+        root, rest = root + 1, rest[1:]
+    elif rest[:1] == "b":
+        root, rest = root - 1, rest[1:]
+    # 분수 코드의 베이스는 근음 위 어딘가의 코드 톤이거나 별개 음이다.
+    # 성질 판정에는 쓰지 않되, 그 음을 허용 집합에 넣어준다.
+    quality, _, bass = rest.partition("/")
+    intervals = next((_QUALITIES[q] for q in _QUALITY_ORDER if quality == q), None)
+    if intervals is None:
+        return None
+    classes = {(root + step) % SEMITONES for step in intervals}
+    if bass:
+        bass_class = pitch_classes(bass)
+        if bass_class is None:
+            return None
+        classes |= bass_class
+    return frozenset(classes)
+
+
+def voicing_pitch_classes(voicing, tuning) -> frozenset[int]:
+    """(줄, 프렛) 보이싱이 실제로 내는 음의 반음 값 집합. string 1 = tuning[0]."""
+    return frozenset((tuning[string - 1] + fret) % SEMITONES
+                     for string, fret in voicing
+                     if 1 <= string <= len(tuning))
+
+
+def voicing_matches(name: str, voicing, tuning) -> bool | None:
+    """보이싱이 코드명의 음만 내는지. 판정할 수 없으면 None.
+
+    코드 톤을 빼먹은 보이싱(기타에서 흔하다)은 통과시키고, **코드에 없는 음을
+    내는** 보이싱만 걸러낸다. AI 가 이름과 무관한 프렛을 줘도 검증할 수 없으면
+    악보가 조용히 틀리기 때문이다 — 실측 예: Bm7 에 개방현 6개(EADGBE).
+    """
+    expected = pitch_classes(name)
+    if expected is None:
+        return None
+    return voicing_pitch_classes(voicing, tuning) <= expected
+
+
 def voicing_for(name: str | None) -> tuple[tuple[int, int], ...] | None:
     """코드명의 보이싱. 모르는 코드는 None."""
     if name is None:

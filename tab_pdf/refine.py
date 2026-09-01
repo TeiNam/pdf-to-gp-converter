@@ -21,6 +21,7 @@ from . import ai, chords, corrections
 # 모델 출력을 그대로 터미널에 쓰면 ANSI/OSC 제어문자로 화면을 위조할 수 있다.
 # 모델 입력은 PDF 에서 왔으므로 신뢰 경계 밖이다 — IR 에 넣기 전에 씻는다.
 _CONTROL_CHARS = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
+_WHITESPACE = re.compile(r"\s+")
 # 모델 메모가 길어지면 화면과 IR 을 덮는다
 MAX_NOTE_LENGTH = 800
 
@@ -95,8 +96,12 @@ SYSTEM_PROMPT = """\
    그 마디의 가사를 옮길 때는 **그 마디의 모든 음절을 빠짐없이 다시 나열**한다.
    글자를 더하거나 빼거나 바꾸면 그 마디의 가사 보정은 전부 폐기된다.
 3. 코드명 — `{"op":"chord","measure":M,"beat":B,"name":"Am7"}`
+   `known_voicings` 에 없는 이름을 쓸 때는 **같은 응답에 `voicing` 보정을 함께**
+   내야 한다. 보이싱이 없으면 .gp5 에 코드가 아예 표시되지 않아 폐기된다.
 4. 보이싱 — `{"op":"voicing","name":"Am7","frets":[0,1,0,2,0,-1]}`
    `frets` 는 **1번줄부터 6번줄 순서**의 6개 배열, `-1` 은 안 쓰는 줄이다.
+   프렛이 실제로 그 코드의 음만 내는지 음정으로 검증한다 — 코드에 없는 음이
+   섞이면 폐기된다. 코드 톤을 생략하는 것은 괜찮다.
 
 ## 하지 말 것
 - 음(프렛·줄)을 추가·삭제·변경하지 말 것. 리듬(duration)도 건드리지 말 것.
@@ -152,8 +157,12 @@ def _known_voicing_names(ir: dict) -> set[str]:
 
 
 def _clean_note(text: str) -> str:
-    """모델 메모를 IR·화면에 넣기 전에 씻는다."""
-    return _CONTROL_CHARS.sub("", text).strip()[:MAX_NOTE_LENGTH]
+    """모델 메모를 IR·화면에 넣기 전에 씻는다.
+
+    개행·탭도 공백으로 눕힌다 — 줄바꿈을 남기면 메모 안에 가짜 보고 행을 끼워
+    넣어 화면을 위조할 수 있다 (메모는 PDF 에서 온 값이라 신뢰 경계 밖이다).
+    """
+    return _WHITESPACE.sub(" ", _CONTROL_CHARS.sub("", text)).strip()[:MAX_NOTE_LENGTH]
 
 
 def _batches(measures: list[dict], size: int) -> list[list[dict]]:

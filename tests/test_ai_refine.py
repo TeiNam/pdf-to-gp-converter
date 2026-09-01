@@ -426,38 +426,89 @@ def test_voicing_never_overwrites_a_hand_verified_one():
     assert "검증" in _reasons(outcome)[0]
 
 
-def test_voicing_must_actually_sound_the_named_chord():
-    """이름만 믿으면 악보가 조용히 틀린다 — Bm7 에 개방현 6개는 Bm7 이 아니다."""
+@pytest.mark.parametrize("frets, hint", [
+    # 개방현 6개는 Bm7 이 아니다 (E·G 가 코드에 없다)
+    ([0, 0, 0, 0, 0, 0], "없는 음을 낸다"),
+    # 근음 B 하나만 짚으면 어떤 코드든 "부분집합" 이라 통과해버린다
+    ([-1, -1, -1, -1, 2, -1], "화음이라고 볼 수 없다"),
+    # 3음 미만은 화음이 아니다 (F#·B 만 — 5도 하나)
+    ([-1, -1, -1, 4, 2, -1], "화음이라고 볼 수 없다"),
+    # 근음이 빠진 보이싱 (D·F#·A = D 장3화음)
+    ([2, 3, 2, 0, -1, -1], "근음"),
+])
+def test_voicing_must_actually_sound_the_named_chord(frets, hint):
+    """이름만 믿으면 악보가 조용히 틀린다."""
     _, outcome = corrections.apply_corrections(
-        _ir(), [{"op": "voicing", "name": "Bm7", "frets": [0, 0, 0, 0, 0, 0]}])
+        _ir(), [{"op": "voicing", "name": "Bm7", "frets": frets}])
 
-    assert not outcome.applied
-    assert "없는 음을 낸다" in _reasons(outcome)[0]
+    assert not outcome.applied, f"{frets} 가 Bm7 로 통과했다"
+    assert hint in _reasons(outcome)[0]
 
 
-def test_voicing_may_omit_chord_tones():
-    """기타 보이싱은 코드 톤을 빼먹는 일이 흔하다 — 그건 통과해야 한다."""
+def test_voicing_may_omit_the_fifth():
+    """5음 생략은 기타에서 흔하다 — 그건 통과해야 한다 (B·D·A)."""
     _, outcome = corrections.apply_corrections(
         _ir(), [{"op": "voicing", "name": "Bm7",
-                 "frets": [-1, -1, -1, 4, 2, -1]}])       # D, B 만
+                 "frets": [-1, -1, 2, 0, 2, -1]}])
 
     assert len(outcome.applied) == 1, _reasons(outcome)
 
 
-def test_unverifiable_chord_quality_is_not_rejected():
-    """표에 없는 성질은 '틀렸다' 가 아니라 '판정할 수 없다' 다."""
-    assert chords.pitch_classes("Cmystic13alt") is None
+def test_unverifiable_chord_quality_is_rejected():
+    """신뢰 경계 밖의 입력에서 '판정 불가' 를 허용으로 읽으면 검증이 통째로 우회된다."""
+    assert chords.parse("Cfoo") is None
     _, outcome = corrections.apply_corrections(
-        _ir(), [{"op": "voicing", "name": "Cmystic13alt",
+        _ir(), [{"op": "voicing", "name": "Cfoo",
                  "frets": [3, 3, 3, -1, -1, -1]}])
 
-    assert len(outcome.applied) == 1, _reasons(outcome)
+    assert not outcome.applied
+    assert "성질을 몰라" in _reasons(outcome)[0]
+
+
+def test_quality_names_containing_a_slash_are_not_split_as_bass():
+    """'6/9' 를 무조건 분수 코드로 쪼개면 그 항목이 영영 안 쓰인다."""
+    spec = chords.parse("C6/9")
+
+    assert spec is not None and spec.bass is None
+    assert spec.classes == frozenset({0, 2, 4, 7, 9})
+
+
+def test_slash_bass_is_one_note_and_must_be_the_lowest():
+    """C/E 를 재귀 해석하면 E 장3화음(E·G#·B)까지 허용된다."""
+    spec = chords.parse("C/E")
+    assert spec.bass == 4
+    assert 8 not in spec.classes, "G# 이 허용됐다 — 베이스를 코드로 읽었다"
+
+    tuning = STANDARD_TUNING
+    lowest_is_e = [(6, 0), (5, 3), (4, 2), (3, 0), (2, 1), (1, 0)]
+    lowest_is_c = [(5, 3), (4, 2), (3, 0), (2, 1), (1, 0)]
+    assert chords.voicing_matches("C/E", lowest_is_e, tuning) is True
+    assert chords.voicing_matches("C/E", lowest_is_c, tuning) is False
+
+
+def test_power_chord_is_allowed_to_have_only_two_tones():
+    assert chords.voicing_matches("B5", [(6, 7), (5, 9)], STANDARD_TUNING) is True
 
 
 def test_hand_verified_voicings_pass_their_own_pitch_check():
     """표에 든 5개가 검증기를 통과하지 못하면 검증기나 표가 틀렸다."""
     for name, voicing in chords.VOICINGS.items():
         assert chords.voicing_matches(name, voicing, STANDARD_TUNING) is True, name
+
+
+def test_chord_rename_is_refused_rather_than_dropping_a_technique():
+    """음이 사라지면 연주법도 사라진다 — 지우지 말고 거절해 사용자가 보게 한다."""
+    ir = _ir(_measure(0, [_beat(list(chords.VOICINGS["G"]), chord="G",
+                                from_chord=True,
+                                techniques=[{"string": 6, "kind": "hammer"}])]))
+    result, outcome = corrections.apply_corrections(ir, [
+        {"op": "chord", "measure": 0, "beat": 0, "name": "Am"}])
+
+    assert not outcome.applied
+    assert "붙을 음이 없어진다" in _reasons(outcome)[0]
+    assert result["measures"][0]["beats"][0]["chord"] == "G"
+    assert result["measures"][0]["beats"][0]["techniques"] == [
+        {"string": 6, "kind": "hammer"}]
 
 
 @pytest.mark.parametrize("frets, hint", [

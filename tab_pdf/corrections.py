@@ -164,6 +164,16 @@ def _apply_chord(ir: dict, measures: dict, correction: dict,
         return (f"{name} 의 보이싱을 몰라 .gp5 에 표시할 수 없다 "
                 f"— voicing 보정을 같이 내거나 chords.VOICINGS 에 넣어야 한다")
     if beat.get("from_chord"):
+        # 음을 갈아치우면 이미 붙어 있던 연주법이 없는 줄을 가리킬 수 있다.
+        # build 는 그런 연주법을 조용히 버리므로, 지우지 말고 보정을 거절한다 —
+        # 무엇을 잃는지 사용자가 보고 결정해야 한다.
+        strings = {string for string, _ in voicing}
+        orphaned = [t for t in beat.get("techniques", ())
+                    if t.get("string") is not None and t["string"] not in strings]
+        if orphaned:
+            kinds = ", ".join(f"{t['string']}번줄 {t['kind']}" for t in orphaned)
+            return (f"{name} 으로 바꾸면 {kinds} 가 붙을 음이 없어진다 "
+                    f"— 연주법을 버리지 않으려고 코드명 보정을 거절한다")
         beat["notes"] = [{"string": string, "fret": fret}
                          for string, fret in voicing]
     beat["chord"] = name
@@ -179,6 +189,22 @@ def _chord_name(correction: dict) -> tuple[str | None, str | None]:
         return None, (f"코드명이 GP5 의 {chords.MAX_NAME_BYTES}바이트 필드보다 길다 "
                       f"— 조용히 잘린다: {name!r}")
     return name.strip(), None
+
+
+def _voicing_mismatch(name: str, voicing, tuning) -> str:
+    """왜 안 맞는지 구체적으로 말한다 — '틀렸다' 만으론 고칠 수 없다."""
+    spec = chords.parse(name)
+    played = chords.voicing_pitch_classes(voicing, tuning)
+    extra = sorted(played - spec.classes)
+    if extra:
+        return f"이 프렛은 {name} 에 없는 음을 낸다 (반음값 {extra})"
+    if spec.root not in played:
+        return f"이 프렛에 {name} 의 근음(반음값 {spec.root})이 없다"
+    if spec.bass is not None:
+        return (f"{name} 의 최저음은 반음값 {spec.bass} 여야 하는데 "
+                f"{chords._lowest_pitch_class(voicing, tuning)} 다")
+    return (f"음이 {len(played)}개뿐이라 {name} 화음이라고 볼 수 없다 "
+            f"(최소 {min(chords.MIN_CHORD_TONES, len(spec.classes))}개)")
 
 
 def _validate_frets(frets) -> str | None:
@@ -232,11 +258,15 @@ def _apply_voicing(ir: dict, correction: dict) -> str | None:
                 for string, fret in enumerate(correction["frets"], start=1)
                 if fret != UNUSED_STRING]
     # 이름과 프렛이 맞는지 음정으로 확인한다. 이름만 믿으면 악보가 조용히 틀린다
-    if chords.voicing_matches(name, proposed, ir["tuning"]) is False:
-        extra = sorted(chords.voicing_pitch_classes(proposed, ir["tuning"])
-                       - chords.pitch_classes(name))
-        return (f"이 프렛은 {name} 에 없는 음을 낸다 (반음값 {extra}) "
-                f"— 코드명과 보이싱이 맞지 않는다")
+    verdict = chords.voicing_matches(name, proposed, ir["tuning"])
+    if verdict is None:
+        # 검증할 수 없는 것은 통과시키지 않는다. 신뢰 경계 밖의 입력에서
+        # "판정 불가" 를 허용으로 읽으면 정규식만 통과하는 이름(`Cfoo`)에
+        # 아무 프렛이나 붙여 검증을 통째로 우회할 수 있다.
+        return (f"{name} 의 코드 성질을 몰라 보이싱을 검증할 수 없다 "
+                f"— chords._QUALITIES 에 넣어야 받는다")
+    if verdict is False:
+        return _voicing_mismatch(name, proposed, ir["tuning"])
     voicing = ir.setdefault("ai_voicings", {})
     if name in voicing:
         return f"{name} 보이싱을 이미 받았다"

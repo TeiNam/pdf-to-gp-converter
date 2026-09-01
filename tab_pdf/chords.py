@@ -6,6 +6,7 @@ string 1 = 고음 E, 6 = 저음 E. fret 0 = 개방현.
 """
 
 import re
+from dataclasses import dataclass
 
 # 코드명 후보 판정. A~G 로 시작해야 하므로 'H'(해머온)·'2'/'3'(페이지 번호)는 걸러지고,
 # 미등록 코드('Bm7')는 통과해 unknown_chord 경고 경로가 살아난다.
@@ -72,37 +73,68 @@ _QUALITIES: dict[str, tuple[int, ...]] = {
     "sus2": (0, 2, 7),
     "sus4": (0, 5, 7),
 }
-_QUALITY_ORDER = tuple(sorted(_QUALITIES, key=len, reverse=True))
 
 
-def pitch_classes(name: str) -> frozenset[int] | None:
-    """코드명이 쓰는 음(반음 값 집합). 성질을 모르면 None.
+# 화음이라고 부를 최소 음 수. 이보다 적으면 근음 하나만 짚어도 어떤 코드든
+# "부분집합" 이라 통과해버린다. 파워코드(5)처럼 성질 자체가 2음이면 그 수를 쓴다.
+MIN_CHORD_TONES = 3
 
-    None 은 "틀렸다" 가 아니라 "판정할 수 없다" 다 — 호출자는 검증을 건너뛴다.
-    표에 없는 성질을 틀렸다고 처리하면 멀쩡한 코드를 거부한다.
-    """
+
+@dataclass(frozen=True)
+class ChordSpec:
+    """코드명을 반음 값으로 푼 결과."""
+
+    root: int
+    classes: frozenset[int]
+    bass: int | None = None         # 분수 코드의 베이스 (`G/B` 의 B)
+
+
+def _note_value(text: str) -> int | None:
+    """음 이름 하나를 반음 값으로. 코드명이 아니라 단음만 받는다."""
+    text = text.strip()
+    if not text or text[0] not in _ROOTS:
+        return None
+    value, rest = _ROOTS[text[0]], text[1:]
+    if rest in ("#", "♯"):
+        return (value + 1) % SEMITONES
+    if rest in ("b", "♭"):
+        return (value - 1) % SEMITONES
+    return value % SEMITONES if not rest else None
+
+
+def parse(name: str) -> ChordSpec | None:
+    """코드명을 푼다. 성질을 모르면 None — 판정할 수 없다는 뜻이다."""
     text = name.strip()
     if not text or text[0] not in _ROOTS:
         return None
-    root = _ROOTS[text[0]]
-    rest = text[1:]
-    if rest[:1] == "#":
+    root, rest = _ROOTS[text[0]], text[1:]
+    if rest[:1] in ("#", "♯"):
         root, rest = root + 1, rest[1:]
-    elif rest[:1] == "b":
+    elif rest[:1] in ("b", "♭"):
         root, rest = root - 1, rest[1:]
-    # 분수 코드의 베이스는 근음 위 어딘가의 코드 톤이거나 별개 음이다.
-    # 성질 판정에는 쓰지 않되, 그 음을 허용 집합에 넣어준다.
-    quality, _, bass = rest.partition("/")
-    intervals = next((_QUALITIES[q] for q in _QUALITY_ORDER if quality == q), None)
+    root %= SEMITONES
+
+    # 성질 이름에 '/' 가 들어가는 것이 있다 ('6/9'). 통째로 먼저 맞춰본 뒤에
+    # 분수 코드로 쪼갠다 — 무조건 쪼개면 '6/9' 항목이 영영 안 쓰인다.
+    quality, bass = rest, None
+    if quality not in _QUALITIES and "/" in rest:
+        quality, _, bass_name = rest.rpartition("/")
+        bass = _note_value(bass_name)
+        if bass is None:
+            return None
+    intervals = _QUALITIES.get(quality)
     if intervals is None:
         return None
     classes = {(root + step) % SEMITONES for step in intervals}
-    if bass:
-        bass_class = pitch_classes(bass)
-        if bass_class is None:
-            return None
-        classes |= bass_class
-    return frozenset(classes)
+    if bass is not None:
+        classes.add(bass)
+    return ChordSpec(root=root, classes=frozenset(classes), bass=bass)
+
+
+def pitch_classes(name: str) -> frozenset[int] | None:
+    """코드명이 쓰는 음(반음 값 집합). 성질을 모르면 None."""
+    spec = parse(name)
+    return None if spec is None else spec.classes
 
 
 def voicing_pitch_classes(voicing, tuning) -> frozenset[int]:
@@ -112,17 +144,34 @@ def voicing_pitch_classes(voicing, tuning) -> frozenset[int]:
                      if 1 <= string <= len(tuning))
 
 
-def voicing_matches(name: str, voicing, tuning) -> bool | None:
-    """보이싱이 코드명의 음만 내는지. 판정할 수 없으면 None.
+def _lowest_pitch_class(voicing, tuning) -> int | None:
+    pitches = [tuning[string - 1] + fret for string, fret in voicing
+               if 1 <= string <= len(tuning)]
+    return min(pitches) % SEMITONES if pitches else None
 
-    코드 톤을 빼먹은 보이싱(기타에서 흔하다)은 통과시키고, **코드에 없는 음을
-    내는** 보이싱만 걸러낸다. AI 가 이름과 무관한 프렛을 줘도 검증할 수 없으면
-    악보가 조용히 틀리기 때문이다 — 실측 예: Bm7 에 개방현 6개(EADGBE).
+
+def voicing_matches(name: str, voicing, tuning) -> bool | None:
+    """보이싱이 코드명대로 소리 나는지. 성질을 모르면 None (판정 불가).
+
+    네 가지를 본다:
+    1. 코드에 없는 음을 내지 않는다 — 실측 예: Bm7 에 개방현 6개(EADGBE)
+    2. 근음이 들어 있다
+    3. 화음이라 부를 만큼 음이 있다 — 부분집합만 보면 B 한 음이 Bm7 로 통과한다
+    4. 분수 코드면 지정된 베이스가 최저음이다 (`C/E` 의 최저음은 E)
+
+    코드 톤을 일부 빼먹는 것은 통과시킨다 — 5음 생략은 기타에서 흔하다.
     """
-    expected = pitch_classes(name)
-    if expected is None:
+    spec = parse(name)
+    if spec is None:
         return None
-    return voicing_pitch_classes(voicing, tuning) <= expected
+    played = voicing_pitch_classes(voicing, tuning)
+    if not played <= spec.classes or spec.root not in played:
+        return False
+    if len(played) < min(MIN_CHORD_TONES, len(spec.classes)):
+        return False
+    if spec.bass is not None and _lowest_pitch_class(voicing, tuning) != spec.bass:
+        return False
+    return True
 
 
 def voicing_for(name: str | None) -> tuple[tuple[int, int], ...] | None:

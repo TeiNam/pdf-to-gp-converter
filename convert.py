@@ -79,7 +79,9 @@ def _report_refinement(ir: dict) -> None:
     refinement = ir.get("refinement")
     if refinement is None:
         return
-    applied = collections.Counter(c.get("op", "?") for c in refinement["applied"])
+    # 폐기 목록의 op 는 모델이 준 값 그대로라 리스트·dict 일 수 있다.
+    # Counter 에 그대로 넣으면 unhashable 로 보고 자체가 죽는다.
+    applied = collections.Counter(str(c.get("op", "?")) for c in refinement["applied"])
     print(f"AI     : {refinement['backend']}  "
           f"배치 {refinement['batches']}개, 제안 {refinement['proposed']}건")
     print(f"  반영 : {sum(applied.values())}건 {dict(applied)}")
@@ -88,7 +90,8 @@ def _report_refinement(ir: dict) -> None:
               f"{refinement['realized_beats']}개 (그전엔 무음이었다)")
     if refinement["rejected"]:
         reasons = collections.Counter(
-            entry["correction"].get("op", "?") for entry in refinement["rejected"])
+            str(entry["correction"].get("op", "?"))
+            for entry in refinement["rejected"])
         print(f"  폐기 : {len(refinement['rejected'])}건 {dict(reasons)}"
               " — 검증을 통과하지 못한 제안 (--ir 에 이유가 남는다)")
     for note in refinement["model_notes"]:

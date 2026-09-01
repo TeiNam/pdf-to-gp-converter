@@ -23,22 +23,29 @@ from . import chords
 
 # GP5 에 파라미터 없이 그대로 담을 수 있는 연주법만 받는다. 트릴·트레몰로·꾸밈음은
 # 프렛·박자 인자가 필요해서 제외했다 — 인자를 AI 에 맡기면 검증할 근거가 없다.
-TECHNIQUE_KINDS = frozenset({
+# 타브의 한 줄에 붙는 표기 — 대상 줄이 반드시 있어야 한다. 박 전체에 걸면
+# 스트럼 6음을 모두 벤딩하는 식의 말이 안 되는 악보가 된다.
+STRING_TECHNIQUES = frozenset({
     "hammer",           # 해머온·풀오프. GP 는 둘을 한 플래그로 다룬다
     "slide",            # 다음 음으로 시프트 슬라이드
     "slide_out_down", "slide_out_up",
     "slide_in_below", "slide_in_above",
     "bend",             # 반음 벤드 (build 에서 기본 곡선을 만든다)
-    "vibrato",
     "harmonic",         # 내추럴 하모닉스
+})
+# 박 전체에 걸릴 수 있는 표기 — `string` 을 생략하면 그 beat 의 모든 음에 붙는다.
+# 악보 위·아래에 그려지는 아티큘레이션과 주법 지시가 여기 든다.
+BEAT_TECHNIQUES = frozenset({
+    "vibrato",
     "palm_mute",
     "let_ring",
     "staccato",
-    "dead",             # 뮤트 노트 'x'
+    "dead",             # 뮤트 노트 'x' — 6현 뮤트 스트럼은 박 전체다
     "accent",
     "heavy_accent",
     "ghost",
 })
+TECHNIQUE_KINDS = STRING_TECHNIQUES | BEAT_TECHNIQUES
 
 OPS = ("technique", "lyric", "chord", "voicing")
 
@@ -105,7 +112,11 @@ def _apply_technique(measures: dict, correction: dict) -> str | None:
         return "이 beat 에는 음이 없어 연주법을 붙일 곳이 없다"
 
     string = correction.get("string")
-    if string is not None:
+    if string is None:
+        if kind in STRING_TECHNIQUES:
+            return (f"{kind} 는 한 줄에만 걸리는 표기다 — string 을 지정해야 한다 "
+                    f"(박 전체로 걸 수 있는 것: {', '.join(sorted(BEAT_TECHNIQUES))})")
+    else:
         string, reason = _index_of(string, "string")
         if reason:
             return reason
@@ -131,24 +142,36 @@ def _apply_chord(ir: dict, measures: dict, correction: dict,
     beat, reason = _beat_at(measures, correction)
     if reason:
         return reason
-    name = correction.get("name")
-    if not isinstance(name, str) or not chords.looks_like_chord(name):
-        return f"코드명 형태가 아니다: {name!r}"
-    name = name.strip()
+    name, reason = _chord_name(correction)
+    if reason:
+        return reason
     key = (correction.get("measure"), correction.get("beat"))
     if key in claimed:
         return f"이 beat 에 이미 다른 코드 보정을 적용했다 — {name} 은 버린다"
     if beat.get("chord") == name:
         return f"이미 {name} 다"
+    # 보이싱이 없으면 build 가 다이어그램을 못 만들어 .gp5 에 코드가 아예 안 남는다.
+    # IR 에만 남는 이름은 사용자에게 보이지 않으므로 여기서 거절해 경고로 드러낸다.
+    voicing = chords.voicing_in(ir, name)
+    if voicing is None:
+        return (f"{name} 의 보이싱을 몰라 .gp5 에 표시할 수 없다 "
+                f"— voicing 보정을 같이 내거나 chords.VOICINGS 에 넣어야 한다")
     if beat.get("from_chord"):
-        voicing = chords.voicing_in(ir, name)
-        if voicing is None:
-            return f"{name} 의 보이싱을 몰라 이 beat 의 음을 다시 만들 수 없다"
         beat["notes"] = [{"string": string, "fret": fret}
                          for string, fret in voicing]
     beat["chord"] = name
     claimed.add(key)
     return None
+
+
+def _chord_name(correction: dict) -> tuple[str | None, str | None]:
+    name = correction.get("name")
+    if not isinstance(name, str) or not chords.looks_like_chord(name):
+        return None, f"코드명 형태가 아니다: {name!r}"
+    if not chords.name_fits(name):
+        return None, (f"코드명이 GP5 의 {chords.MAX_NAME_BYTES}바이트 필드보다 길다 "
+                      f"— 조용히 잘린다: {name!r}")
+    return name.strip(), None
 
 
 def _validate_frets(frets) -> str | None:
@@ -190,10 +213,9 @@ def _realize_chord_beats(ir: dict) -> int:
 
 def _apply_voicing(ir: dict, correction: dict) -> str | None:
     """모르는 코드의 보이싱을 채운다. 검증된 기존 보이싱은 덮지 않는다."""
-    name = correction.get("name")
-    if not isinstance(name, str) or not chords.looks_like_chord(name):
-        return f"코드명 형태가 아니다: {name!r}"
-    name = name.strip()
+    name, reason = _chord_name(correction)
+    if reason:
+        return reason
     if chords.voicing_for(name) is not None:
         return f"{name} 은 손으로 검증한 보이싱이 이미 있다"
     reason = _validate_frets(correction.get("frets"))
@@ -252,19 +274,41 @@ def _reject(correction: dict, reason: str) -> dict:
     return {"correction": correction, "reason": reason}
 
 
-def _lyric_key(correction: dict) -> object:
-    """가사 보정을 마디별로 묶는 키. 해시 못 하는 값은 문자열로 눕힌다."""
-    measure = correction.get("measure")
-    return measure if isinstance(measure, (int, str, type(None))) else repr(measure)
+def _prune_orphan_techniques(ir: dict) -> list[dict]:
+    """음이 사라진 줄에 남은 연주법을 걷어낸다.
+
+    코드명 보정이 `from_chord` beat 의 음을 새 보이싱으로 갈아치우면, 먼저 적용된
+    연주법이 없는 줄을 가리킬 수 있다. build 는 그런 연주법을 조용히 무시하므로
+    "반영했다" 고 보고해두면 거짓이 된다.
+    """
+    orphans = []
+    for measure in ir["measures"]:
+        for position, beat in enumerate(measure["beats"]):
+            techniques = beat.get("techniques")
+            if not techniques:
+                continue
+            strings = {note["string"] for note in beat["notes"]}
+            kept = [t for t in techniques
+                    if t.get("string") is None or t["string"] in strings]
+            if len(kept) == len(techniques):
+                continue
+            for technique in techniques:
+                if technique not in kept:
+                    orphans.append({"measure": measure["index"],
+                                    "beat": position, **technique})
+            beat["techniques"] = kept
+    return orphans
 
 
 def apply_corrections(ir: dict, proposals: list[dict]) -> tuple[dict, Outcome]:
     """보정안을 검증해 새 IR 을 만든다. 원본은 그대로 둔다.
 
-    `voicing` 을 먼저 처리한다 — 코드명 보정이 새 보이싱으로 음을 다시 만들 수
-    있어야 하고, 순서가 뒤면 같은 배치 안에서도 실패한다.
-
-    가사 보정은 마디 단위로 모아 원자적으로 적용한다. 나머지는 건별이다.
+    처리 순서가 결과를 바꾼다:
+    1. `voicing` — 코드명 보정이 새 보이싱으로 음을 다시 만들 수 있어야 한다
+    2. 보이싱으로 무음 beat 를 채운다 — 그래야 그 beat 의 연주법이 통과한다
+    3. 나머지 보정 (건별)
+    4. 가사 (마디 단위 원자적)
+    5. 다시 채우기 + 고아 연주법 정리 — 3에서 음이 바뀐 beat 를 수습한다
     """
     result = copy.deepcopy(ir)
     measures = {measure["index"]: measure for measure in result["measures"]}
@@ -272,24 +316,21 @@ def apply_corrections(ir: dict, proposals: list[dict]) -> tuple[dict, Outcome]:
     rejected: list[dict] = []
     chord_claims: set = set()
 
-    lyric_groups: dict[object, list[dict]] = collections.defaultdict(list)
-    ordered = sorted(
-        proposals,
-        key=lambda c: 0 if isinstance(c, dict) and c.get("op") == "voicing" else 1)
-    for correction in ordered:
-        if not isinstance(correction, dict):
-            rejected.append(_reject({"raw": correction}, "객체가 아니다"))
-            continue
+    others, lyric_groups, malformed = _sort_proposals(proposals)
+    rejected.extend(malformed)
+
+    for correction in (c for c in others if c.get("op") == "voicing"):
+        reason = _apply_voicing(result, correction)
+        (rejected.append(_reject(correction, reason)) if reason
+         else applied.append(correction))
+    realized = _realize_chord_beats(result)
+
+    for correction in (c for c in others if c.get("op") != "voicing"):
         op = correction.get("op")
-        if op == "lyric":
-            lyric_groups[_lyric_key(correction)].append(correction)
-            continue
         if op == "technique":
             reason = _apply_technique(measures, correction)
         elif op == "chord":
             reason = _apply_chord(result, measures, correction, chord_claims)
-        elif op == "voicing":
-            reason = _apply_voicing(result, correction)
         else:
             reason = f"op {op!r} 를 모른다. {' | '.join(OPS)} 중 하나여야 한다"
         if reason:
@@ -297,11 +338,10 @@ def apply_corrections(ir: dict, proposals: list[dict]) -> tuple[dict, Outcome]:
         else:
             applied.append(correction)
 
-    for group in lyric_groups.values():
-        measure_index, reason = _index_of(group[0].get("measure"), "measure")
-        measure = None if reason else measures.get(measure_index)
+    for measure_index, group in lyric_groups.items():
+        measure = measures.get(measure_index)
         if measure is None:
-            reason = reason or f"마디 {measure_index} 가 없다"
+            reason = f"마디 {measure_index} 가 없다"
         else:
             # 원본을 복사해 시험 적용한다 — 실패 시 마디가 반쯤 바뀌면 안 된다
             trial = copy.deepcopy(measure)
@@ -313,5 +353,42 @@ def apply_corrections(ir: dict, proposals: list[dict]) -> tuple[dict, Outcome]:
         else:
             applied.extend(group)
 
-    realized = _realize_chord_beats(result)
+    realized += _realize_chord_beats(result)
+    for orphan in _prune_orphan_techniques(result):
+        rejected.append(_reject(
+            {"op": "technique", **orphan},
+            "코드명 보정으로 음이 바뀌어 이 줄에 붙일 음이 없어졌다"))
+        applied = [c for c in applied if not _same_technique(c, orphan)]
     return result, Outcome(tuple(applied), tuple(rejected), realized)
+
+
+def _same_technique(correction: dict, orphan: dict) -> bool:
+    return (correction.get("op") == "technique"
+            and correction.get("measure") == orphan["measure"]
+            and correction.get("beat") == orphan["beat"]
+            and correction.get("string") == orphan["string"]
+            and correction.get("kind") == orphan["kind"])
+
+
+def _sort_proposals(proposals: list) -> tuple[list[dict], dict, list[dict]]:
+    """보정안을 (건별, 마디별 가사 그룹, 형식 불량) 으로 가른다.
+
+    가사 그룹의 키는 **검증을 통과한 정수**여야 한다. `measure` 를 그대로 키로
+    쓰면 `True` 와 `1` 이 같은 키가 되어 (`hash(True) == hash(1)`) boolean 보정이
+    멀쩡한 마디의 그룹에 섞여 들어간다.
+    """
+    others: list[dict] = []
+    groups: dict[int, list[dict]] = collections.defaultdict(list)
+    malformed: list[dict] = []
+    for correction in proposals:
+        if not isinstance(correction, dict):
+            malformed.append(_reject({"raw": correction}, "객체가 아니다"))
+        elif correction.get("op") != "lyric":
+            others.append(correction)
+        else:
+            measure_index, reason = _index_of(correction.get("measure"), "measure")
+            if reason:
+                malformed.append(_reject(correction, reason))
+            else:
+                groups[measure_index].append(correction)
+    return others, groups, malformed

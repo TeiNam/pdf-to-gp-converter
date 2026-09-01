@@ -77,12 +77,17 @@ def _redact(url: str) -> str:
     `https://user:token@host/v1?key=…` 형태를 그대로 label 에 실으면 IR 파일과
     터미널 출력으로 비밀값이 샌다.
     """
-    parsed = urllib.parse.urlsplit(url)
-    if not parsed.hostname:
+    try:
+        parsed = urllib.parse.urlsplit(url)
+        host, port = parsed.hostname, parsed.port
+    except ValueError:
+        # 포트가 범위를 벗어나거나 숫자가 아니면 urlsplit.port 가 던진다.
+        # 오류를 알리려고 부른 함수가 오류로 죽으면 원인을 못 본다.
+        return "형식이 잘못된 URL"
+    if not host:
         return "?"
-    port = f":{parsed.port}" if parsed.port else ""
     scheme = f"{parsed.scheme}://" if parsed.scheme else ""
-    return f"{scheme}{parsed.hostname}{port}"
+    return f"{scheme}{host}{f':{port}' if port else ''}"
 
 
 def _load_dotenv() -> None:
@@ -282,6 +287,9 @@ def _complete_bedrock(config: Config, system: str, user: str) -> str:
                             if enabled and key in message), None)
             if dropped is None:
                 raise AiUnavailable(f"{config.label} 호출 거부: {exc}") from exc
+            # ponytail: temperature 를 거부하는 모델(claude-sonnet-5)에서는 온도를
+            # 고정할 수 없어 실행마다 보정 결과가 달라진다. 재현성이 필요하면
+            # temperature 를 받는 모델을 쓰거나 --ir 산출물을 커밋해 고정한다.
             optional[dropped] = False
             continue
         except botocore.exceptions.BotoCoreError as exc:

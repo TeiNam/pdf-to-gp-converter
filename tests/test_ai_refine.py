@@ -71,6 +71,26 @@ def test_technique_without_a_string_covers_the_whole_beat(tmp_path):
     assert all(n.effect.accentuatedNote for n in notes), "일부 음만 악센트가 됐다"
 
 
+@pytest.mark.parametrize("kind", sorted(corrections.STRING_TECHNIQUES))
+def test_single_string_techniques_must_name_a_string(kind):
+    """벤드·해머·슬라이드를 박 전체에 걸면 스트럼 6음을 다 벤딩하는 악보가 된다."""
+    ir = _ir(_measure(0, [_beat([(6, 3), (2, 5)])]))
+    _, outcome = corrections.apply_corrections(ir, [
+        {"op": "technique", "measure": 0, "beat": 0, "kind": kind}])
+
+    assert not outcome.applied, f"{kind} 가 string 없이 통과했다"
+    assert "한 줄에만 걸리는 표기" in _reasons(outcome)[0]
+
+
+@pytest.mark.parametrize("kind", sorted(corrections.BEAT_TECHNIQUES))
+def test_beat_wide_techniques_may_omit_the_string(kind):
+    ir = _ir(_measure(0, [_beat([(6, 3), (2, 5)])]))
+    _, outcome = corrections.apply_corrections(ir, [
+        {"op": "technique", "measure": 0, "beat": 0, "kind": kind}])
+
+    assert len(outcome.applied) == 1, _reasons(outcome)
+
+
 def test_technique_on_an_empty_beat_is_rejected():
     ir = _ir(_measure(0, [_beat()]))
     _, outcome = corrections.apply_corrections(ir, [
@@ -199,12 +219,23 @@ def test_lyric_rejection_is_scoped_to_one_measure():
 def test_chord_name_applied_and_garbage_rejected():
     ir = _ir(_measure(0, [_beat([(2, 3)]), _beat([(2, 5)])]))
     result, outcome = corrections.apply_corrections(ir, [
-        {"op": "chord", "measure": 0, "beat": 0, "name": "Bm7"},
+        {"op": "chord", "measure": 0, "beat": 0, "name": "Am"},
         {"op": "chord", "measure": 0, "beat": 1, "name": "Hmm9"}])
 
-    assert [c["name"] for c in outcome.applied] == ["Bm7"]
-    assert result["measures"][0]["beats"][0]["chord"] == "Bm7"
+    assert [c["name"] for c in outcome.applied] == ["Am"]
+    assert result["measures"][0]["beats"][0]["chord"] == "Am"
     assert result["measures"][0]["beats"][1]["chord"] is None
+
+
+def test_chord_with_a_voicing_from_the_same_batch_is_accepted():
+    """새 코드는 voicing 보정을 같이 내면 순서와 무관하게 통과해야 한다."""
+    ir = _ir(_measure(0, [_beat([(2, 3)])]))
+    result, outcome = corrections.apply_corrections(ir, [
+        {"op": "chord", "measure": 0, "beat": 0, "name": "Bm7"},
+        {"op": "voicing", "name": "Bm7", "frets": [2, 3, 2, 4, 2, -1]}])
+
+    assert len(outcome.applied) == 2, _reasons(outcome)
+    assert result["measures"][0]["beats"][0]["chord"] == "Bm7"
 
 
 def test_chord_rename_redraws_the_notes_it_derived():
@@ -244,6 +275,67 @@ def test_second_chord_on_the_same_beat_is_rejected():
     assert len(outcome.applied) == 1
     assert len(outcome.rejected) == 1
     assert result["measures"][0]["beats"][0]["chord"] == "Am"
+
+
+def test_boolean_measure_cannot_smuggle_into_a_lyric_group():
+    """`hash(True) == hash(1)` 이라 measure 를 그대로 그룹 키로 쓰면 섞여 들어간다."""
+    ir = _ir(_measure(0, [_beat(lyric="가"), _beat()]),
+             _measure(1, [_beat(lyric="가"), _beat()]))
+    result, outcome = corrections.apply_corrections(ir, [
+        {"op": "lyric", "measure": 1, "beat": 0, "text": "가"},
+        {"op": "lyric", "measure": True, "beat": 1, "text": ""}])
+
+    assert len(outcome.rejected) == 1
+    assert "measure 이 정수가 아니다" in _reasons(outcome)[0]
+    assert len(outcome.applied) == 1
+
+
+def test_chord_name_too_long_for_gp5_is_rejected():
+    """GP5 는 코드명을 22바이트에서 조용히 자른다 — IR 과 출력이 달라진다."""
+    ir = _ir(_measure(0, [_beat([(2, 3)])]))
+    _, outcome = corrections.apply_corrections(ir, [
+        {"op": "chord", "measure": 0, "beat": 0, "name": "C" + "add9" * 6}])
+
+    assert not outcome.applied
+    assert "22바이트" in _reasons(outcome)[0]
+
+
+def test_chord_without_a_voicing_is_rejected_because_gp5_shows_nothing():
+    """보이싱이 없으면 다이어그램이 안 만들어져 .gp5 에 코드가 아예 안 남는다."""
+    ir = _ir(_measure(0, [_beat([(2, 3)])]))
+    _, outcome = corrections.apply_corrections(ir, [
+        {"op": "chord", "measure": 0, "beat": 0, "name": "Bm7"}])
+
+    assert not outcome.applied
+    assert "표시할 수 없다" in _reasons(outcome)[0]
+
+
+def test_orphaned_technique_is_pruned_when_the_chord_replaces_the_notes():
+    """음이 바뀌어 붙일 곳이 없어진 연주법을 '반영했다' 고 보고하면 거짓이다."""
+    ir = _ir(_measure(0, [_beat(list(chords.VOICINGS["G"]), chord="G",
+                                from_chord=True)]))
+    result, outcome = corrections.apply_corrections(ir, [
+        {"op": "technique", "measure": 0, "beat": 0, "string": 6,
+         "kind": "hammer"},           # G 에는 6번줄이 있고 Am 에는 없다
+        {"op": "chord", "measure": 0, "beat": 0, "name": "Am"}])
+
+    assert [c["op"] for c in outcome.applied] == ["chord"]
+    assert any("붙일 음이 없어졌다" in entry["reason"]
+               for entry in outcome.rejected)
+    assert result["measures"][0]["beats"][0]["techniques"] == []
+
+
+def test_technique_survives_on_a_beat_filled_by_a_new_voicing():
+    """보이싱으로 음을 채우기 전에 연주법을 검사하면 멀쩡한 보정이 거부된다."""
+    ir = _ir(_measure(0, [_beat(chord="Bm7", from_chord=True)]))
+    result, outcome = corrections.apply_corrections(ir, [
+        {"op": "technique", "measure": 0, "beat": 0, "string": 2,
+         "kind": "hammer"},
+        {"op": "voicing", "name": "Bm7", "frets": [2, 3, 2, 4, 2, -1]}])
+
+    assert len(outcome.applied) == 2, _reasons(outcome)
+    assert result["measures"][0]["beats"][0]["techniques"] == [
+        {"string": 2, "kind": "hammer"}]
 
 
 def test_new_voicing_fills_a_silent_chord_beat():
@@ -473,11 +565,11 @@ def test_refine_survives_a_failed_batch():
         if '"measure": 0' in user:
             raise ai.AiUnavailable("서버가 끊겼다")
         return {"corrections": [{"op": "chord", "measure": 4, "beat": 0,
-                                 "name": "Bm7"}]}
+                                 "name": "Am"}]}
 
     result, outcome = refine_and_assert(_four_measures(), ask)
     assert len(outcome.applied) == 1
-    assert result["measures"][4]["beats"][0]["chord"] == "Bm7"
+    assert result["measures"][4]["beats"][0]["chord"] == "Am"
     assert len(result["refinement"]["failed_batches"]) == 1
     assert [w["kind"] for w in result["warnings"]] == ["ai_batch_failed"]
 
@@ -555,6 +647,25 @@ def test_config_label_hides_url_secrets():
 
     assert config.label == "openai:m @ https://host.example:8443"
     assert "s3cr3t" not in config.label and "abc" not in config.label
+
+
+@pytest.mark.parametrize("url", ["http://host:99999/v1", "http://host:abc/v1"])
+def test_config_label_survives_a_malformed_url(url):
+    """오류를 알리려고 부르는 함수가 오류로 죽으면 원인을 못 본다."""
+    config = ai.Config(backend=ai.BACKEND_OPENAI, model="m", base_url=url)
+
+    assert "잘못된 URL" in config.label
+
+
+def test_report_survives_a_malformed_op_from_the_model():
+    """모델이 op 에 리스트를 넣으면 Counter 가 죽어 CLI 보고 자체가 중단됐다."""
+    import convert
+
+    result, _ = refine_and_assert(
+        _four_measures(),
+        lambda *_: {"corrections": [{"op": ["technique"], "measure": 0}]},
+        limit=1)
+    convert._report_refinement(result)      # 예외가 나면 실패다
 
 
 # ── smufl: 기호 식별 ────────────────────────────────────────────────────────

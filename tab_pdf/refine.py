@@ -66,7 +66,9 @@ SYSTEM_PROMPT = """\
 `band` 를 꼭 함께 본다 — `tab` 대역의 아티큘레이션은 기타 파트의 것이지만,
 `melody` 대역의 것은 노래 선율에 붙은 것이라 기타 노트로 옮기면 안 된다.
 
-`beat` 는 그 글리프에 x 좌표가 가장 가까운 beat 인덱스다.
+`beat` 는 그 글리프에 x 좌표가 가장 가까운 beat 인덱스다. `tab` 대역 글리프에는
+`string`(1~6, 어느 선에도 안 붙으면 null)이 함께 온다 — 줄이 뜻인 기호(X 음표머리,
+하모닉스)는 이 값을 쓴다.
 
 ## 한국 타브 악보 표기 관례
 `H`=해머온, `P`=풀오프, `S`=슬라이드, 뒤에 붙는 `.D`/`.U`=방향(내림/올림),
@@ -181,7 +183,13 @@ def _scope(proposals: list, measures: list[dict]) -> tuple[list, list]:
     for proposal in proposals:
         if not isinstance(proposal, dict) or proposal.get("op") == "voicing":
             kept.append(proposal)       # 형식은 corrections 가 판정한다
-        elif proposal.get("measure") in allowed:
+            continue
+        target = proposal.get("measure")
+        # 정수가 아니면 set 조회에서 TypeError 로 refinement 전체가 죽는다.
+        # 타입 판정은 corrections 가 제 메시지로 하도록 넘긴다.
+        if not isinstance(target, int) or isinstance(target, bool):
+            kept.append(proposal)
+        elif target in allowed:
             kept.append(proposal)
         else:
             strays.append(proposal)

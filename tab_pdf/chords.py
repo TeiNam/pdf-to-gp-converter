@@ -11,6 +11,10 @@ import re
 # 미등록 코드('Bm7')는 통과해 unknown_chord 경고 경로가 살아난다.
 _CHORD_PATTERN = re.compile(r"^[A-G](?:[#b])?[A-Za-z0-9#b/+()-]*$")
 
+# GP4/5 는 코드명을 22바이트 고정 필드에 쓴다 (pyguitarpro writeByteSizeString(…, 22)).
+# 넘치면 조용히 잘려서 IR 과 .gp5 의 코드명이 달라진다 — 실측으로 30자가 22자로 잘렸다.
+MAX_NAME_BYTES = 22
+
 VOICINGS: dict[str, tuple[tuple[int, int], ...]] = {
     "Cadd9": ((5, 3), (4, 2), (3, 0), (2, 3), (1, 3)),
     "E7":    ((6, 0), (5, 2), (4, 0), (3, 1), (2, 0), (1, 0)),
@@ -23,6 +27,11 @@ VOICINGS: dict[str, tuple[tuple[int, int], ...]] = {
 def looks_like_chord(token: str) -> bool:
     """코드명 형태인지. 미등록 코드도 True 여야 경고 경로가 살아난다."""
     return bool(_CHORD_PATTERN.match(token.strip()))
+
+
+def name_fits(name: str, encoding: str = "cp949") -> bool:
+    """GP5 의 22바이트 코드명 필드에 들어가는지."""
+    return len(name.strip().encode(encoding, errors="replace")) <= MAX_NAME_BYTES
 
 
 def voicing_for(name: str | None) -> tuple[tuple[int, int], ...] | None:

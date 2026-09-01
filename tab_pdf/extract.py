@@ -392,6 +392,10 @@ def _annotation_glyphs(geo, system, bounds, beat_xs, fret_glyphs) -> list[dict]:
             "size": glyph.size,
             "beat": _nearest_beat(beat_xs, glyph.x),
         }
+        if band == "tab":
+            # 타브 대역 기호는 어느 줄에 놓였는지가 뜻이다 — X 음표머리(뮤트)나
+            # 하모닉스 표시를 줄까지 특정하려면 y 를 줄 번호로 바꿔줘야 한다.
+            entry["string"] = _snap_to_string(glyph.y, system.tab_ys)
         symbol = smufl.label(glyph.char)
         if symbol is None:
             entry["char"] = glyph.char

@@ -121,22 +121,15 @@ def _apply_technique(note: Note, kind: str) -> bool:
 
 
 def _apply_techniques(beat: Beat, techniques: list[dict]) -> None:
-    """연주법을 해당 줄의 노트에 붙인다."""
+    """연주법을 노트에 붙인다. `string` 이 None 이면 그 beat 의 모든 음에 붙인다.
+
+    악센트처럼 악보 위·아래에 그려지는 표기는 한 줄이 아니라 그 박 전체에 걸린다.
+    """
     for technique in techniques:
+        string = technique.get("string")
         for note in beat.notes:
-            if note.string == technique["string"]:
+            if string is None or note.string == string:
                 _apply_technique(note, technique["kind"])
-
-
-def voicing_for(ir: dict, name: str) -> tuple[tuple[int, int], ...] | None:
-    """손으로 검증한 표가 우선이고, 없으면 AI 가 채운 보이싱을 쓴다."""
-    verified = chords.voicing_for(name)
-    if verified is not None:
-        return verified
-    proposed = ir.get("ai_voicings", {}).get(name.strip())
-    if proposed is None:
-        return None
-    return tuple((string, fret) for string, fret in proposed)
 
 
 def _make_chord_diagram(name: str,
@@ -205,8 +198,8 @@ def build_song(ir: dict) -> Song:
             _apply_techniques(beat, beat_ir.get("techniques", ()))
             chord_name = beat_ir.get("chord")
             if chord_name and chord_name != previous_chord:
-                diagram = _make_chord_diagram(chord_name,
-                                              voicing_for(ir, chord_name))
+                diagram = _make_chord_diagram(
+                    chord_name, chords.voicing_in(ir, chord_name))
                 if diagram is not None:
                     beat.effect.chord = diagram
                 previous_chord = chord_name

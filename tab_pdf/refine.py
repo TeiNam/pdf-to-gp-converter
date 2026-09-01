@@ -11,10 +11,18 @@
 """
 
 import concurrent.futures
+import dataclasses
 import json
+import re
 from dataclasses import dataclass
 
-from . import ai, corrections
+from . import ai, chords, corrections
+
+# 모델 출력을 그대로 터미널에 쓰면 ANSI/OSC 제어문자로 화면을 위조할 수 있다.
+# 모델 입력은 PDF 에서 왔으므로 신뢰 경계 밖이다 — IR 에 넣기 전에 씻는다.
+_CONTROL_CHARS = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
+# 모델 메모가 길어지면 화면과 IR 을 덮는다
+MAX_NOTE_LENGTH = 800
 
 # 한 번에 보낼 마디 수. 시스템(악보 한 단)이 보통 4마디라 주석이 배치 안에서 닫힌다
 BATCH_MEASURES = 4
@@ -39,7 +47,25 @@ SYSTEM_PROMPT = """\
 - `between`: 멜로디 5선과 타브 6선 사이 — 가사와 H/P/S 연주법 표기가 섞여 있다
 - `tab`    : 타브 6선 — **기타 파트**다
 
-`symbol` 은 SMuFL 사설 영역 코드포인트를 분류한 이름이다 (예: "쉼표", "아티큘레이션").
+## 글리프 항목 읽는 법
+평범한 문자는 `char` 로 온다. 음악 기호는 유니코드 사설 영역이라 글자로는 읽을 수
+없어서 `codepoint`(예: "U+E4A1")·`symbol`(구획 분류)·`smufl_name`(표준 SMuFL 이름,
+모르면 null)으로 온다. **`smufl_name` 이 있으면 그것을 근거로 판단하고**, null 이면
+`codepoint` 로 SMuFL 표준을 떠올려 판단한다. 확신이 없으면 생략한다.
+
+자주 나오는 것들:
+- `articAccentBelow`/`articAccentAbove` (U+E4A0/E4A1) → `accent`
+- `articMarcatoAbove`/`Below` → `heavy_accent`
+- `articStaccatoAbove`/`Below`, `articStaccatissimo*` → `staccato`
+- `noteheadXBlack` (U+E0A9) 이 `tab` 대역에 있으면 뮤트 노트 → `dead`
+- `stringsHarmonic` → `harmonic`
+- `augmentationDot`(점음표의 점)·`flag*`(꼬리)·`notehead*`·`rest*`·`gClef`·
+  `timeSig*`·`accidental*` 은 음정·리듬 표기다 → **연주법이 아니므로 보정하지 않는다**
+- `segno`/`coda` 는 곡 진행 지시다 → 4가지 보정 대상이 아니다
+
+`band` 를 꼭 함께 본다 — `tab` 대역의 아티큘레이션은 기타 파트의 것이지만,
+`melody` 대역의 것은 노래 선율에 붙은 것이라 기타 노트로 옮기면 안 된다.
+
 `beat` 는 그 글리프에 x 좌표가 가장 가까운 beat 인덱스다.
 
 ## 한국 타브 악보 표기 관례
@@ -49,12 +75,20 @@ SYSTEM_PROMPT = """\
 표기는 보통 대상 음의 **오른쪽**에 놓이고 효과는 **왼쪽(앞) 음**이 갖는다.
 
 ## 낼 수 있는 보정 (이 4가지뿐)
-1. 연주법 — `{"op":"technique","measure":M,"beat":B,"string":S,"kind":K}`
+1. 연주법 — `{"op":"technique","measure":M,"beat":B,"kind":K,"string":S}`
    `kind` 는 다음 중 하나여야 한다:
    hammer(해머온·풀오프 공용), slide, slide_out_down, slide_out_up,
    slide_in_below, slide_in_above, bend, vibrato, harmonic, palm_mute,
    let_ring, staccato, dead, accent, heavy_accent, ghost
-   `string` 은 그 beat 의 `notes` 에 **실제로 있는 줄**이어야 한다.
+
+   **`string` 은 특정 줄 하나에만 걸리는 표기일 때만 쓴다.** 그 beat 의 `notes` 에
+   실제로 있는 줄이어야 한다. H/P/S·벤드·하모닉스처럼 타브의 한 줄에 붙어 있는
+   표기가 그렇다 — 표기 x 좌표 왼쪽의 가장 가까운 음이 대상이다.
+
+   **악보 위·아래에 그려지는 아티큘레이션은 `string` 을 생략한다.** 악센트
+   (`articAccent*`)·마르카토·스타카토는 한 줄이 아니라 **그 박 전체**에 붙는
+   표기다. 생략하면 그 beat 의 모든 음에 적용된다. 줄을 짐작해서 적지 말 것 —
+   스트럼 화음 6음 중 하나만 악센트가 되면 원본과 다른 악보가 된다.
 2. 가사 재배치 — `{"op":"lyric","measure":M,"beat":B,"text":"음절"}`
    그 마디의 가사를 옮길 때는 **그 마디의 모든 음절을 빠짐없이 다시 나열**한다.
    글자를 더하거나 빼거나 바꾸면 그 마디의 가사 보정은 전부 폐기된다.
@@ -112,9 +146,12 @@ def _batch_payload(ir: dict, measures: list[dict]) -> str:
 
 
 def _known_voicing_names(ir: dict) -> set[str]:
-    from . import chords
-
     return set(chords.VOICINGS) | set(ir.get("ai_voicings", {}))
+
+
+def _clean_note(text: str) -> str:
+    """모델 메모를 IR·화면에 넣기 전에 씻는다."""
+    return _CONTROL_CHARS.sub("", text).strip()[:MAX_NOTE_LENGTH]
 
 
 def _batches(measures: list[dict], size: int) -> list[list[dict]]:
@@ -127,8 +164,28 @@ class _BatchResult:
 
     span: tuple[int, int]
     proposals: tuple[dict, ...] = ()
+    strays: tuple[dict, ...] = ()
     note: str | None = None
     failure: str | None = None
+
+
+def _scope(proposals: list, measures: list[dict]) -> tuple[list, list]:
+    """이 배치의 마디를 가리키는 보정만 남긴다.
+
+    배치는 자기가 본 마디만 고칠 수 있다. 범위를 안 막으면 한 배치의 환각이나
+    PDF 텍스트에 심어둔 프롬프트 인젝션이 보지도 않은 마디를 고칠 수 있다.
+    `voicing` 은 마디에 매이지 않으므로 통과시킨다.
+    """
+    allowed = {measure["index"] for measure in measures}
+    kept, strays = [], []
+    for proposal in proposals:
+        if not isinstance(proposal, dict) or proposal.get("op") == "voicing":
+            kept.append(proposal)       # 형식은 corrections 가 판정한다
+        elif proposal.get("measure") in allowed:
+            kept.append(proposal)
+        else:
+            strays.append(proposal)
+    return kept, strays
 
 
 def _run_batch(ask, config: ai.Config, ir: dict,
@@ -142,10 +199,11 @@ def _run_batch(ask, config: ai.Config, ir: dict,
     if not isinstance(proposals, list):
         return _BatchResult(span, failure=f"corrections 가 배열이 아니다: "
                                           f"{type(proposals).__name__}")
+    kept, strays = _scope(proposals, measures)
     note = answer.get("notes")
-    return _BatchResult(
-        span, proposals=tuple(proposals),
-        note=note.strip() if isinstance(note, str) and note.strip() else None)
+    cleaned = _clean_note(note) if isinstance(note, str) else ""
+    return _BatchResult(span, proposals=tuple(kept), strays=tuple(strays),
+                        note=cleaned or None)
 
 
 def _gather(ask, config: ai.Config, ir: dict, batches: list[list[dict]],
@@ -197,10 +255,17 @@ def refine_ir(ir: dict, *, config: ai.Config | None = None,
              for batch in results if batch.note]
 
     result, outcome = corrections.apply_corrections(ir, proposals)
+    strays = tuple(
+        {"correction": proposal,
+         "reason": f"배치(마디 {batch.span[0]}..{batch.span[1]}) 밖의 마디 "
+                   f"{proposal.get('measure')!r} 를 고치려 했다"}
+        for batch in results for proposal in batch.strays)
+    outcome = dataclasses.replace(outcome, rejected=outcome.rejected + strays)
     result["refinement"] = {
         "backend": config.label,
         "batches": len(batches),
-        "proposed": len(proposals),
+        "proposed": len(proposals) + len(strays),
+        "realized_beats": outcome.realized,
         "applied": list(outcome.applied),
         "rejected": list(outcome.rejected),
         "failed_batches": failures,

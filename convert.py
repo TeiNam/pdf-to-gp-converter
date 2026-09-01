@@ -83,6 +83,9 @@ def _report_refinement(ir: dict) -> None:
     print(f"AI     : {refinement['backend']}  "
           f"배치 {refinement['batches']}개, 제안 {refinement['proposed']}건")
     print(f"  반영 : {sum(applied.values())}건 {dict(applied)}")
+    if refinement.get("realized_beats"):
+        print(f"  실현 : 새 보이싱으로 음을 채운 beat "
+              f"{refinement['realized_beats']}개 (그전엔 무음이었다)")
     if refinement["rejected"]:
         reasons = collections.Counter(
             entry["correction"].get("op", "?") for entry in refinement["rejected"])
@@ -108,9 +111,10 @@ def _report(ir: dict, output: str) -> int:
     informational = [w for w in ir["warnings"] if w["kind"] not in DEFECT_KINDS]
     if informational:
         summary = collections.Counter(w["kind"] for w in informational)
+        # 무엇이 반영됐는지 문장으로 박아두면 기능이 늘 때마다 거짓말이 된다.
+        # 종류별 개수만 보여주고 해석은 --ir 에 맡긴다.
         print(f"미반영 : {sum(summary.values())}건 {dict(summary)}"
-              " — 음정·리듬·연주법·가사는 옮겼고, 아티큘레이션·쉼표·"
-              "가사 늘임표는 반영하지 못했다")
+              " — 1차 추출에서 옮기지 못한 표기다 (--ir 에 마디별 이유가 있다)")
     if defects:
         print(f"\n결함성 경고 {len(defects)}건 — 결과를 그대로 믿지 말 것:",
               file=sys.stderr)

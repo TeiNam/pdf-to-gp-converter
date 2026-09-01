@@ -4,9 +4,13 @@
 통과하지 못한 제안은 IR 에 닿지 못하고 이유와 함께 기록된다.
 
 핵심 불변식 — **AI 는 가사를 날조할 수 없다.** 한 마디의 가사 재배치를 적용하기
-전에 그 마디 음절의 다중집합(multiset)이 원본과 같은지 확인한다. 다르면 그
-마디의 가사 보정을 통째로 버린다. 즉 AI 는 음절을 다른 beat 로 옮길 수만 있고,
-글자를 더하거나 빼거나 바꿀 수는 없다.
+전에 그 마디 음절을 beat 순서로 이어붙인 문자열이 원본과 **완전히 같은지** 확인한다.
+다르면 그 마디의 가사 보정을 통째로 버린다. 즉 AI 는 음절을 다른 beat 로 옮길
+수만 있고, 글자를 더하거나 빼거나 바꾸거나 **순서를 뒤집을 수도** 없다.
+
+AI 가 준 값은 조회에 쓰기 **전에** 타입을 검사한다. `measure: []` 는 dict 조회에서
+TypeError 로 변환 전체를 죽이고, `measure: true` 는 `True == 1` 이라 1번 마디를
+가리키는 멀쩡한 인덱스가 되어 조용히 잘못된 마디를 고친다.
 
 원본 IR 은 건드리지 않는다 — 새 dict 를 돌려준다.
 """
@@ -51,23 +55,32 @@ class Outcome:
 
     applied: tuple[dict, ...] = ()
     rejected: tuple[dict, ...] = ()
+    # 새로 받은 보이싱으로 음을 채워 넣은 beat 수 (코드에서 음을 만드는 슬래시 beat)
+    realized: int = 0
 
-    @property
-    def counts(self) -> dict[str, int]:
-        return {"applied": len(self.applied), "rejected": len(self.rejected)}
 
-    def by_op(self) -> dict[str, int]:
-        return dict(collections.Counter(c.get("op", "?") for c in self.applied))
+def _index_of(value, label: str) -> tuple[int | None, str | None]:
+    """AI 가 준 값을 인덱스로 받는다.
+
+    `bool` 은 `int` 의 하위형이라 따로 막는다 — `True` 를 그냥 두면 `True == 1`
+    이라 1번 마디를 가리키는 멀쩡한 인덱스가 되어버린다.
+    """
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None, f"{label} 이 정수가 아니다: {value!r}"
+    return value, None
 
 
 def _beat_at(measures: dict, correction: dict) -> tuple[dict | None, str | None]:
     """보정이 가리키는 beat. 못 찾으면 이유를 함께 돌려준다."""
-    measure = measures.get(correction.get("measure"))
+    measure_index, reason = _index_of(correction.get("measure"), "measure")
+    if reason:
+        return None, reason
+    measure = measures.get(measure_index)
     if measure is None:
-        return None, f"마디 {correction.get('measure')!r} 가 없다"
-    beat_index = correction.get("beat")
-    if not isinstance(beat_index, int) or isinstance(beat_index, bool):
-        return None, f"beat 이 정수가 아니다: {beat_index!r}"
+        return None, f"마디 {measure_index} 가 없다"
+    beat_index, reason = _index_of(correction.get("beat"), "beat")
+    if reason:
+        return None, reason
     if not 0 <= beat_index < len(measure["beats"]):
         return None, (f"마디 {measure['index']} 의 beat 는 "
                       f"0..{len(measure['beats']) - 1} 인데 {beat_index} 를 가리켰다")
@@ -75,33 +88,66 @@ def _beat_at(measures: dict, correction: dict) -> tuple[dict | None, str | None]
 
 
 def _apply_technique(measures: dict, correction: dict) -> str | None:
+    """연주법을 beat 에 붙인다.
+
+    `string` 을 생략하면 그 beat 의 **모든 음**에 걸린다. 악보 위·아래에 그려지는
+    아티큘레이션(악센트·마르카토·스타카토)은 한 줄이 아니라 그 박 전체에 붙는
+    표기다 — 줄을 요구하면 모델이 근거 없이 하나를 고르게 되고, 스트럼 화음
+    6개 음 중 1개만 악센트가 되어 원본과 다른 악보가 나온다.
+    """
     beat, reason = _beat_at(measures, correction)
     if reason:
         return reason
     kind = correction.get("kind")
-    if kind not in TECHNIQUE_KINDS:
+    if not isinstance(kind, str) or kind not in TECHNIQUE_KINDS:
         return f"연주법 {kind!r} 을 GP5 로 옮길 수 없다"
+    if not beat["notes"]:
+        return "이 beat 에는 음이 없어 연주법을 붙일 곳이 없다"
+
     string = correction.get("string")
-    if string not in {note["string"] for note in beat["notes"]}:
-        return (f"이 beat 의 줄은 "
-                f"{sorted(n['string'] for n in beat['notes'])} 인데 {string!r} 을 가리켰다")
+    if string is not None:
+        string, reason = _index_of(string, "string")
+        if reason:
+            return reason
+        if string not in {note["string"] for note in beat["notes"]}:
+            return (f"이 beat 의 줄은 {sorted(n['string'] for n in beat['notes'])} "
+                    f"인데 {string} 을 가리켰다")
+
     existing = beat.setdefault("techniques", [])
+    where = f"{string}번줄" if string is not None else "beat 전체"
     if any(t["string"] == string and t["kind"] == kind for t in existing):
-        return f"{string}번줄에 {kind} 가 이미 있다"
+        return f"{where}에 {kind} 가 이미 있다"
     existing.append({"string": string, "kind": kind})
     return None
 
 
-def _apply_chord(measures: dict, correction: dict) -> str | None:
+def _apply_chord(ir: dict, measures: dict, correction: dict,
+                 claimed: set) -> str | None:
+    """beat 의 코드명을 바꾼다.
+
+    그 beat 의 음이 코드에서 만들어진 것(`from_chord`)이면 새 코드의 보이싱으로
+    다시 만든다. 이름만 갈면 다이어그램은 새 코드인데 소리는 이전 코드가 난다.
+    """
     beat, reason = _beat_at(measures, correction)
     if reason:
         return reason
     name = correction.get("name")
     if not isinstance(name, str) or not chords.looks_like_chord(name):
         return f"코드명 형태가 아니다: {name!r}"
-    if beat.get("chord") == name.strip():
+    name = name.strip()
+    key = (correction.get("measure"), correction.get("beat"))
+    if key in claimed:
+        return f"이 beat 에 이미 다른 코드 보정을 적용했다 — {name} 은 버린다"
+    if beat.get("chord") == name:
         return f"이미 {name} 다"
-    beat["chord"] = name.strip()
+    if beat.get("from_chord"):
+        voicing = chords.voicing_in(ir, name)
+        if voicing is None:
+            return f"{name} 의 보이싱을 몰라 이 beat 의 음을 다시 만들 수 없다"
+        beat["notes"] = [{"string": string, "fret": fret}
+                         for string, fret in voicing]
+    beat["chord"] = name
+    claimed.add(key)
     return None
 
 
@@ -119,6 +165,27 @@ def _validate_frets(frets) -> str | None:
     if fretted and max(fretted) - min(fretted) > MAX_VOICING_SPAN:
         return f"{max(fretted) - min(fretted)}프렛에 걸쳐 있어 짚을 수 없다: {frets!r}"
     return None
+
+
+def _realize_chord_beats(ir: dict) -> int:
+    """코드에서 음을 만드는 beat 중 비어 있던 것을 새로 알게 된 보이싱으로 채운다.
+
+    추출 단계에서 보이싱을 모르는 코드는 음이 하나도 없는 beat 로 남는다 —
+    GP 에서 무음이다. AI 가 보이싱을 알려줬으면 그때 소리가 나야 하는데,
+    다이어그램만 그리고 넘어가면 `voicing` 보정이 아무 일도 하지 않는 셈이다.
+    """
+    filled = 0
+    for measure in ir["measures"]:
+        for beat in measure["beats"]:
+            if beat["notes"] or not beat.get("from_chord") or not beat.get("chord"):
+                continue
+            voicing = chords.voicing_in(ir, beat["chord"])
+            if voicing is None:
+                continue
+            beat["notes"] = [{"string": string, "fret": fret}
+                             for string, fret in voicing]
+            filled += 1
+    return filled
 
 
 def _apply_voicing(ir: dict, correction: dict) -> str | None:
@@ -143,36 +210,38 @@ def _apply_voicing(ir: dict, correction: dict) -> str | None:
     return None
 
 
-def _syllable_counter(measure: dict) -> collections.Counter:
-    return collections.Counter(
-        "".join(beat.get("lyric") or "" for beat in measure["beats"]))
+def _lyric_text(measure: dict) -> str:
+    """마디의 가사를 beat 순서로 이어붙인 문자열."""
+    return "".join(beat.get("lyric") or "" for beat in measure["beats"])
 
 
 def _apply_lyric_group(measure: dict, group: list[dict]) -> str | None:
-    """한 마디의 가사를 통째로 재배치한다. 다중집합이 바뀌면 전부 버린다.
+    """한 마디의 가사를 통째로 재배치한다. 글자열이 바뀌면 전부 버린다.
+
+    다중집합이 아니라 **순서까지 포함한 문자열**로 비교한다. 다중집합만 보면
+    '가나' 를 '나가' 로 뒤집어도 통과한다 — 가사는 순서가 뜻이다.
 
     부분 적용은 하지 않는다 — 절반만 옮겨진 가사는 원본보다 나쁘다.
     """
     placement: dict[int, str] = {}
     for correction in group:
-        beat_index = correction.get("beat")
-        if not isinstance(beat_index, int) or isinstance(beat_index, bool):
-            return f"beat 이 정수가 아니다: {beat_index!r}"
+        beat_index, reason = _index_of(correction.get("beat"), "beat")
+        if reason:
+            return reason
         if not 0 <= beat_index < len(measure["beats"]):
             return (f"beat 는 0..{len(measure['beats']) - 1} 인데 "
                     f"{beat_index} 를 가리켰다")
         text = correction.get("text")
         if text is not None and not isinstance(text, str):
             return f"text 가 문자열이 아니다: {text!r}"
-        placement[beat_index] = (placement.get(beat_index, "") + (text or ""))
+        placement[beat_index] = placement.get(beat_index, "") + (text or "")
 
-    before = _syllable_counter(measure)
-    proposed = collections.Counter("".join(placement.values()))
+    before = _lyric_text(measure)
+    proposed = "".join(placement.get(position, "")
+                       for position in range(len(measure["beats"])))
     if proposed != before:
-        missing = "".join((before - proposed).elements())
-        added = "".join((proposed - before).elements())
-        return (f"음절 다중집합이 바뀌었다 — 사라짐 {missing!r}, 새로 생김 {added!r}. "
-                f"가사 재배치는 그 마디의 모든 음절을 다시 나열해야 한다")
+        return (f"음절이 바뀌었다 — 원본 {before!r} → 제안 {proposed!r}. "
+                f"가사 재배치는 그 마디의 음절을 순서 그대로 다시 나열해야 한다")
 
     for beat_index, beat in enumerate(measure["beats"]):
         beat["lyric"] = placement.get(beat_index) or None
@@ -183,8 +252,17 @@ def _reject(correction: dict, reason: str) -> dict:
     return {"correction": correction, "reason": reason}
 
 
+def _lyric_key(correction: dict) -> object:
+    """가사 보정을 마디별로 묶는 키. 해시 못 하는 값은 문자열로 눕힌다."""
+    measure = correction.get("measure")
+    return measure if isinstance(measure, (int, str, type(None))) else repr(measure)
+
+
 def apply_corrections(ir: dict, proposals: list[dict]) -> tuple[dict, Outcome]:
     """보정안을 검증해 새 IR 을 만든다. 원본은 그대로 둔다.
+
+    `voicing` 을 먼저 처리한다 — 코드명 보정이 새 보이싱으로 음을 다시 만들 수
+    있어야 하고, 순서가 뒤면 같은 배치 안에서도 실패한다.
 
     가사 보정은 마디 단위로 모아 원자적으로 적용한다. 나머지는 건별이다.
     """
@@ -192,20 +270,24 @@ def apply_corrections(ir: dict, proposals: list[dict]) -> tuple[dict, Outcome]:
     measures = {measure["index"]: measure for measure in result["measures"]}
     applied: list[dict] = []
     rejected: list[dict] = []
+    chord_claims: set = set()
 
     lyric_groups: dict[object, list[dict]] = collections.defaultdict(list)
-    for correction in proposals:
+    ordered = sorted(
+        proposals,
+        key=lambda c: 0 if isinstance(c, dict) and c.get("op") == "voicing" else 1)
+    for correction in ordered:
         if not isinstance(correction, dict):
             rejected.append(_reject({"raw": correction}, "객체가 아니다"))
             continue
         op = correction.get("op")
         if op == "lyric":
-            lyric_groups[correction.get("measure")].append(correction)
+            lyric_groups[_lyric_key(correction)].append(correction)
             continue
         if op == "technique":
             reason = _apply_technique(measures, correction)
         elif op == "chord":
-            reason = _apply_chord(measures, correction)
+            reason = _apply_chord(result, measures, correction, chord_claims)
         elif op == "voicing":
             reason = _apply_voicing(result, correction)
         else:
@@ -215,10 +297,11 @@ def apply_corrections(ir: dict, proposals: list[dict]) -> tuple[dict, Outcome]:
         else:
             applied.append(correction)
 
-    for measure_index, group in lyric_groups.items():
-        measure = measures.get(measure_index)
+    for group in lyric_groups.values():
+        measure_index, reason = _index_of(group[0].get("measure"), "measure")
+        measure = None if reason else measures.get(measure_index)
         if measure is None:
-            reason = f"마디 {measure_index!r} 가 없다"
+            reason = reason or f"마디 {measure_index} 가 없다"
         else:
             # 원본을 복사해 시험 적용한다 — 실패 시 마디가 반쯤 바뀌면 안 된다
             trial = copy.deepcopy(measure)
@@ -230,4 +313,5 @@ def apply_corrections(ir: dict, proposals: list[dict]) -> tuple[dict, Outcome]:
         else:
             applied.extend(group)
 
-    return result, Outcome(tuple(applied), tuple(rejected))
+    realized = _realize_chord_beats(result)
+    return result, Outcome(tuple(applied), tuple(rejected), realized)

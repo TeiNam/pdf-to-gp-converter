@@ -386,14 +386,22 @@ def _annotation_glyphs(geo, system, bounds, beat_xs, fret_glyphs) -> list[dict]:
         band = _band_of(glyph, system)
         if band is None:
             continue
-        glyphs.append({
-            "char": glyph.char,
-            "symbol": smufl.label(glyph.char),
+        entry = {
             "band": band,
             "x": round(glyph.x, 1),
             "size": glyph.size,
             "beat": _nearest_beat(beat_xs, glyph.x),
-        })
+        }
+        symbol = smufl.label(glyph.char)
+        if symbol is None:
+            entry["char"] = glyph.char
+        else:
+            # 사설 영역 문자는 그대로 넘기면 읽을 수 없다. 코드포인트와 표준 이름을
+            # 줘야 '아티큘레이션' 이 악센트인지 스타카토인지 판단할 수 있다.
+            entry["codepoint"] = smufl.codepoint(glyph.char)
+            entry["symbol"] = symbol
+            entry["smufl_name"] = smufl.name(glyph.char)
+        glyphs.append(entry)
     return sorted(glyphs, key=lambda g: g["x"])
 
 
@@ -491,7 +499,10 @@ def _build_measure(geo, system, bounds, index, tokens, warn,
         from_slash = any(abs(slash_x - beat_x) <= BEAT_CLUSTER_TOLERANCE
                          for slash_x in slash_xs)
         chord = stroke = None
-        if from_slash and not notes:
+        # 음이 코드명에서 만들어졌는지 기록한다. 나중에 AI 가 코드명을 고치면
+        # 음도 새 코드로 다시 만들어야 하는데, 여기 아니면 구분할 근거가 없다.
+        from_chord = from_slash and not notes
+        if from_chord:
             chord = _chord_at(tokens, beat_x)
             voicing = chords.voicing_for(chord)
             if chord is None:
@@ -510,6 +521,7 @@ def _build_measure(geo, system, bounds, index, tokens, warn,
             "duration": duration.value,
             "dotted": duration.dotted,
             "chord": chord,
+            "from_chord": from_chord,
             "stroke": stroke,
             "lyric": lyrics.get(beat_x),
             "techniques": [

@@ -15,8 +15,15 @@ Bedrock 은 별도 경로다. Bedrock 의 OpenAI 호환 엔드포인트
 import functools
 import json
 import os
+import pathlib
 import re
+import urllib.parse
 from dataclasses import dataclass
+
+# `.env` 는 프로젝트 루트에서만 찾는다. dotenv 기본값은 호출 지점부터 위로 올라가
+# 탐색해서, 다른 디렉터리에서 CLI 를 돌리면 설정을 놓친다 (실측 확인).
+PROJECT_ROOT = pathlib.Path(__file__).resolve().parents[1]
+ENV_FILE = PROJECT_ROOT / ".env"
 
 BACKEND_OPENAI = "openai"
 BACKEND_BEDROCK = "bedrock"
@@ -35,6 +42,12 @@ CONNECT_TIMEOUT = 10
 MAX_RETRIES = 2
 # 응답에서 JSON 객체를 건져낼 최후 수단 — 가장 바깥 중괄호 쌍
 _JSON_OBJECT = re.compile(r"\{.*\}", re.S)
+# 최신 Claude 는 extended thinking 이 기본이라 출력 예산을 추론에 다 써버린다.
+# 실측(bedrock + claude-sonnet-5, 8192 예산): reasoningContent 만 8192 토큰 쓰고
+# text 가 0바이트로 오고 stopReason=max_tokens 였다. 껐을 때 22초·1869토큰,
+# 켰을 때(32768 예산) 156초·14455토큰인데 답은 오히려 짧았다.
+# 글리프 대조는 추론이 필요한 일이 아니다.
+_THINKING_DISABLED = {"thinking": {"type": "disabled"}}
 
 
 class AiUnavailable(RuntimeError):
@@ -53,12 +66,30 @@ class Config:
 
     @property
     def label(self) -> str:
-        where = self.base_url or self.region or "?"
+        """로그·IR·화면에 찍히는 이름. 비밀값이 섞이지 않아야 한다."""
+        where = _redact(self.base_url) if self.base_url else (self.region or "?")
         return f"{self.backend}:{self.model} @ {where}"
 
 
+def _redact(url: str) -> str:
+    """base_url 에서 호스트만 남긴다.
+
+    `https://user:token@host/v1?key=…` 형태를 그대로 label 에 실으면 IR 파일과
+    터미널 출력으로 비밀값이 샌다.
+    """
+    parsed = urllib.parse.urlsplit(url)
+    if not parsed.hostname:
+        return "?"
+    port = f":{parsed.port}" if parsed.port else ""
+    scheme = f"{parsed.scheme}://" if parsed.scheme else ""
+    return f"{scheme}{parsed.hostname}{port}"
+
+
 def _load_dotenv() -> None:
-    """`.env` 를 읽어 환경변수에 채운다. 이미 있는 값은 덮지 않는다.
+    """프로젝트 루트의 `.env` 를 읽어 환경변수에 채운다. 이미 있는 값은 덮지 않는다.
+
+    셸에 export 한 값이 이긴다 — 비밀값을 파일로 복제하지 않아도 되게 하려는
+    의도다 (.env 에 AWS_BEARER_TOKEN_BEDROCK 을 안 적어도 동작한다).
 
     python-dotenv 가 없으면 조용히 넘긴다 — 환경변수를 직접 export 한 경우다.
     """
@@ -66,7 +97,7 @@ def _load_dotenv() -> None:
         from dotenv import load_dotenv
     except ImportError:
         return
-    load_dotenv(override=False)
+    load_dotenv(ENV_FILE, override=False)
 
 
 def _detect_backend(env) -> str | None:
@@ -136,16 +167,6 @@ def _int_env(env, name: str, default: int) -> int:
         raise AiUnavailable(f"{name}={raw!r} 는 정수가 아닙니다") from exc
 
 
-def _rejects_temperature(exc: Exception) -> bool:
-    """서버가 temperature 를 안 받는다고 답했는지.
-
-    최신 Claude 모델은 `temperature is deprecated for this model` 로 요청 자체를
-    거부한다 (실측: bedrock Converse + claude-sonnet-5). 모델별 지원 여부를 미리
-    알 방법이 없어 거부를 보고 빼는 수밖에 없다.
-    """
-    return "temperature" in str(exc).lower()
-
-
 @functools.lru_cache(maxsize=4)
 def _openai_client(base_url: str | None, api_key: str):
     """클라이언트를 재사용한다 — 배치마다 새로 만들면 연결을 매번 다시 맺는다."""
@@ -174,7 +195,10 @@ def _complete_openai(config: Config, system: str, user: str) -> str:
     except ImportError as exc:
         raise AiUnavailable("openai 패키지가 없습니다 — uv add openai") from exc
 
-    client = _openai_client(config.base_url, config.api_key)
+    try:
+        client = _openai_client(config.base_url, config.api_key)
+    except Exception as exc:
+        raise AiUnavailable(f"OpenAI 클라이언트를 만들 수 없습니다: {exc}") from exc
     base = {
         "model": config.model,
         "messages": [{"role": "system", "content": system},
@@ -199,8 +223,30 @@ def _complete_openai(config: Config, system: str, user: str) -> str:
             continue
         except openai.OpenAIError as exc:
             raise AiUnavailable(f"{config.label} 호출 실패: {exc}") from exc
-        return response.choices[0].message.content or ""
+        choice = response.choices[0]
+        text = choice.message.content or ""
+        if not text:
+            # 추론형 모델이 출력 예산을 다 쓰면 여기로 온다 — 이유를 말해줘야 한다
+            raise AiUnavailable(
+                f"{config.label} 이 빈 응답을 보냈습니다 — "
+                f"finish_reason={choice.finish_reason}. "
+                f"AI_MAX_TOKENS 를 올리거나 추론을 끄세요")
+        return text
     raise AiUnavailable(f"{config.label} 이 요청을 거부했습니다: {failure}") from failure
+
+
+def _bedrock_text(config: Config, response: dict) -> str:
+    """Converse 응답에서 text 블록만 모은다. 비어 있으면 이유를 말한다."""
+    blocks = response["output"]["message"]["content"]
+    text = "".join(block.get("text", "") for block in blocks)
+    if text:
+        return text
+    kinds = sorted({key for block in blocks for key in block})
+    raise AiUnavailable(
+        f"{config.label} 이 빈 응답을 보냈습니다 — stopReason="
+        f"{response.get('stopReason')}, 블록={kinds or '없음'}, "
+        f"출력토큰={response.get('usage', {}).get('outputTokens')}. "
+        f"추론에 예산을 다 썼으면 AI_MAX_TOKENS 를 올리세요")
 
 
 def _complete_bedrock(config: Config, system: str, user: str) -> str:
@@ -209,26 +255,38 @@ def _complete_bedrock(config: Config, system: str, user: str) -> str:
     except ImportError as exc:
         raise AiUnavailable("boto3 가 없습니다 — uv add boto3") from exc
 
-    client = _bedrock_client(config.region)
+    try:
+        client = _bedrock_client(config.region)
+    except Exception as exc:                    # 자격증명·리전 설정 문제
+        raise AiUnavailable(f"bedrock 클라이언트를 만들 수 없습니다: {exc}") from exc
+
     request = {
         "modelId": config.model,
         "system": [{"text": system}],
         "messages": [{"role": "user", "content": [{"text": user}]}],
     }
-    for inference in ({"maxTokens": config.max_tokens,
-                       "temperature": config.temperature},
-                      {"maxTokens": config.max_tokens}):
+    # 거부당한 옵션만 하나씩 떼고 다시 보낸다. 모델별 지원 여부를 미리 알 방법이
+    # 없고, 지원하지 않는 필드를 넣으면 요청 전체가 ValidationException 이 된다.
+    optional = {"thinking": True, "temperature": True}
+    while True:
+        inference = {"maxTokens": config.max_tokens}
+        if optional["temperature"]:
+            inference["temperature"] = config.temperature
+        extra = ({"additionalModelRequestFields": _THINKING_DISABLED}
+                 if optional["thinking"] else {})
         try:
-            response = client.converse(inferenceConfig=inference, **request)
+            response = client.converse(inferenceConfig=inference, **request, **extra)
         except botocore.exceptions.ClientError as exc:
-            if "temperature" in inference and _rejects_temperature(exc):
-                continue
-            raise AiUnavailable(f"{config.label} 호출 거부: {exc}") from exc
+            message = str(exc).lower()
+            dropped = next((key for key, enabled in optional.items()
+                            if enabled and key in message), None)
+            if dropped is None:
+                raise AiUnavailable(f"{config.label} 호출 거부: {exc}") from exc
+            optional[dropped] = False
+            continue
         except botocore.exceptions.BotoCoreError as exc:
             raise AiUnavailable(f"{config.label} 호출 실패: {exc}") from exc
-        blocks = response["output"]["message"]["content"]
-        return "".join(block.get("text", "") for block in blocks)
-    raise AiUnavailable(f"{config.label} 이 요청을 거부했습니다")
+        return _bedrock_text(config, response)
 
 
 _BACKEND_FUNCTIONS = {

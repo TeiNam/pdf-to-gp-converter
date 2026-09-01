@@ -9,15 +9,16 @@ import copy
 import guitarpro as gp
 import pytest
 
-from tab_pdf import ai, build, corrections, refine
+from tab_pdf import ai, build, chords, corrections, refine, smufl
 
 STANDARD_TUNING = [64, 59, 55, 50, 45, 40]
 
 
-def _beat(notes=(), *, lyric=None, chord=None, stroke=None, techniques=None):
+def _beat(notes=(), *, lyric=None, chord=None, stroke=None, techniques=None,
+          from_chord=False):
     return {"x": 0.0, "duration": 8, "dotted": False, "chord": chord,
-            "stroke": stroke, "techniques": list(techniques or ()),
-            "lyric": lyric,
+            "from_chord": from_chord, "stroke": stroke,
+            "techniques": list(techniques or ()), "lyric": lyric,
             "notes": [{"string": s, "fret": f} for s, f in notes]}
 
 
@@ -48,6 +49,51 @@ def test_technique_lands_on_the_named_string():
         {"string": 2, "kind": "bend"}]
 
 
+def test_technique_without_a_string_covers_the_whole_beat(tmp_path):
+    """악센트는 한 줄이 아니라 그 박 전체에 붙는 표기다.
+
+    줄을 요구하면 모델이 근거 없이 하나를 고르고, 스트럼 화음 6음 중 1음만
+    악센트가 된다 — 실측에서 44개 악센트가 1·3·4·5·6번줄로 흩어졌다.
+    """
+    ir = _ir(_measure(0, [_beat([(6, 3), (5, 2), (4, 0), (1, 3)])]))
+    result, outcome = corrections.apply_corrections(ir, [
+        {"op": "technique", "measure": 0, "beat": 0, "kind": "accent"}])
+
+    assert len(outcome.applied) == 1, _reasons(outcome)
+    assert result["measures"][0]["beats"][0]["techniques"] == [
+        {"string": None, "kind": "accent"}]
+
+    out = tmp_path / "accent.gp5"
+    build.write_gp5(build.build_song(result), str(out))
+    song = gp.parse(str(out), encoding="cp949")
+    notes = song.tracks[0].measures[0].voices[0].beats[0].notes
+    assert len(notes) == 4
+    assert all(n.effect.accentuatedNote for n in notes), "일부 음만 악센트가 됐다"
+
+
+def test_technique_on_an_empty_beat_is_rejected():
+    ir = _ir(_measure(0, [_beat()]))
+    _, outcome = corrections.apply_corrections(ir, [
+        {"op": "technique", "measure": 0, "beat": 0, "kind": "accent"}])
+
+    assert not outcome.applied
+    assert "음이 없어" in _reasons(outcome)[0]
+
+
+def test_beat_wide_and_per_string_techniques_coexist():
+    ir = _ir(_measure(0, [_beat([(2, 3), (5, 0)])]))
+    result, outcome = corrections.apply_corrections(ir, [
+        {"op": "technique", "measure": 0, "beat": 0, "kind": "accent"},
+        {"op": "technique", "measure": 0, "beat": 0, "kind": "accent"},
+        {"op": "technique", "measure": 0, "beat": 0, "string": 2,
+         "kind": "hammer"}])
+
+    assert len(outcome.applied) == 2, _reasons(outcome)
+    assert "beat 전체에 accent 가 이미 있다" in _reasons(outcome)[0]
+    assert result["measures"][0]["beats"][0]["techniques"] == [
+        {"string": None, "kind": "accent"}, {"string": 2, "kind": "hammer"}]
+
+
 def test_technique_rejected_when_the_string_has_no_note():
     """AI 가 없는 줄을 짚으면 버린다 — 노트 없는 연주법은 GP 에서 사라진다."""
     ir = _ir(_measure(0, [_beat([(2, 3)])]))
@@ -67,6 +113,13 @@ def test_technique_rejected_when_the_string_has_no_note():
      "beat"),
     ({"op": "technique", "measure": 0, "beat": "0", "string": 2, "kind": "bend"},
      "정수"),
+    # 아래 셋은 조회에 쓰기 전에 타입을 검사하지 않으면 TypeError 로 변환 전체가 죽는다
+    ({"op": "technique", "measure": [], "beat": 0, "string": 2, "kind": "bend"},
+     "measure 이 정수가 아니다"),
+    ({"op": "technique", "measure": 0, "beat": 0, "string": 2, "kind": []},
+     "GP5"),
+    ({"op": "technique", "measure": 0, "beat": 0, "string": {}, "kind": "bend"},
+     "string 이 정수가 아니다"),
 ])
 def test_technique_rejections(correction, hint):
     ir = _ir(_measure(0, [_beat([(2, 3)])]))
@@ -74,6 +127,17 @@ def test_technique_rejections(correction, hint):
 
     assert not outcome.applied
     assert hint in _reasons(outcome)[0]
+
+
+def test_boolean_measure_index_does_not_alias_to_measure_one():
+    """`True == 1` 이라 그냥 두면 1번 마디를 가리키는 멀쩡한 인덱스가 된다."""
+    ir = _ir(_measure(0, [_beat([(2, 3)])]), _measure(1, [_beat([(2, 3)])]))
+    result, outcome = corrections.apply_corrections(ir, [
+        {"op": "technique", "measure": True, "beat": 0, "string": 2,
+         "kind": "bend"}])
+
+    assert not outcome.applied, "True 가 마디 1로 통과했다"
+    assert result["measures"][1]["beats"][0]["techniques"] == []
 
 
 def test_duplicate_technique_is_rejected_not_doubled():
@@ -98,28 +162,22 @@ def test_lyric_realignment_applies_when_syllables_are_unchanged():
     assert [b["lyric"] for b in result["measures"][0]["beats"]] == ["나", None, "는"]
 
 
-def test_ai_cannot_invent_lyrics():
-    """다중집합이 바뀌면 그 마디의 가사 보정을 통째로 버린다."""
-    ir = _ir(_measure(0, [_beat([(2, 3)], lyric="나는"), _beat([(2, 5)])]))
+@pytest.mark.parametrize("texts, original", [
+    (["나는", "사랑"], "나는"),          # 글자를 새로 만들었다
+    (["나", "는"], "나는내"),            # 글자를 버렸다
+    (["나", "가"], "가나"),              # 순서를 뒤집었다 — 다중집합만 보면 통과한다
+    (["나눈", ""], "나는"),              # 글자를 바꿨다
+])
+def test_ai_cannot_change_the_lyric_text(texts, original):
+    ir = _ir(_measure(0, [_beat([(2, 3)], lyric=original), _beat([(2, 5)])]))
     result, outcome = corrections.apply_corrections(ir, [
-        {"op": "lyric", "measure": 0, "beat": 0, "text": "나는"},
-        {"op": "lyric", "measure": 0, "beat": 1, "text": "사랑"}])
+        {"op": "lyric", "measure": 0, "beat": position, "text": text}
+        for position, text in enumerate(texts)])
 
-    assert not outcome.applied
-    assert "새로 생김" in _reasons(outcome)[0]
+    assert not outcome.applied, f"{original!r} → {texts} 가 통과했다"
+    assert "음절이 바뀌었다" in _reasons(outcome)[0]
     # 원본 배치가 그대로여야 한다 — 반쯤 적용되면 안 된다
-    assert [b["lyric"] for b in result["measures"][0]["beats"]] == ["나는", None]
-
-
-def test_ai_cannot_drop_lyrics():
-    ir = _ir(_measure(0, [_beat([(2, 3)], lyric="나는내"), _beat([(2, 5)])]))
-    result, outcome = corrections.apply_corrections(ir, [
-        {"op": "lyric", "measure": 0, "beat": 0, "text": "나"},
-        {"op": "lyric", "measure": 0, "beat": 1, "text": "는"}])
-
-    assert not outcome.applied
-    assert "사라짐" in _reasons(outcome)[0]
-    assert [b["lyric"] for b in result["measures"][0]["beats"]] == ["나는내", None]
+    assert [b["lyric"] for b in result["measures"][0]["beats"]] == [original, None]
 
 
 def test_lyric_rejection_is_scoped_to_one_measure():
@@ -147,6 +205,68 @@ def test_chord_name_applied_and_garbage_rejected():
     assert [c["name"] for c in outcome.applied] == ["Bm7"]
     assert result["measures"][0]["beats"][0]["chord"] == "Bm7"
     assert result["measures"][0]["beats"][1]["chord"] is None
+
+
+def test_chord_rename_redraws_the_notes_it_derived():
+    """코드에서 만든 음은 새 코드의 보이싱으로 다시 만들어야 한다.
+
+    이름만 갈면 다이어그램은 Am 인데 소리는 G 가 난다.
+    """
+    ir = _ir(_measure(0, [_beat([(6, 3), (5, 2), (4, 0), (3, 0), (2, 0), (1, 3)],
+                                chord="G", from_chord=True)]))
+    result, outcome = corrections.apply_corrections(ir, [
+        {"op": "chord", "measure": 0, "beat": 0, "name": "Am"}])
+
+    assert len(outcome.applied) == 1, _reasons(outcome)
+    beat = result["measures"][0]["beats"][0]
+    assert beat["chord"] == "Am"
+    assert {(n["string"], n["fret"]) for n in beat["notes"]} == set(
+        chords.VOICINGS["Am"]), "음이 G 보이싱 그대로 남았다"
+
+
+def test_chord_rename_is_refused_when_the_new_voicing_is_unknown():
+    ir = _ir(_measure(0, [_beat([(5, 0)], chord="Am", from_chord=True)]))
+    result, outcome = corrections.apply_corrections(ir, [
+        {"op": "chord", "measure": 0, "beat": 0, "name": "Bm7"}])
+
+    assert not outcome.applied
+    assert "보이싱을 몰라" in _reasons(outcome)[0]
+    assert result["measures"][0]["beats"][0]["chord"] == "Am"
+
+
+def test_second_chord_on_the_same_beat_is_rejected():
+    """마지막 값이 조용히 이기면 무엇이 반영됐는지 알 수 없다."""
+    ir = _ir(_measure(0, [_beat([(2, 3)])]))
+    result, outcome = corrections.apply_corrections(ir, [
+        {"op": "chord", "measure": 0, "beat": 0, "name": "Am"},
+        {"op": "chord", "measure": 0, "beat": 0, "name": "F"}])
+
+    assert len(outcome.applied) == 1
+    assert len(outcome.rejected) == 1
+    assert result["measures"][0]["beats"][0]["chord"] == "Am"
+
+
+def test_new_voicing_fills_a_silent_chord_beat():
+    """보이싱을 몰라 무음이던 슬래시 beat 가 소리 나야 한다 — 그게 voicing 의 목적이다."""
+    ir = _ir(_measure(0, [_beat(chord="Bm7", from_chord=True)]))
+    result, outcome = corrections.apply_corrections(ir, [
+        {"op": "voicing", "name": "Bm7", "frets": [2, 3, 2, 4, 2, -1]}])
+
+    assert outcome.realized == 1
+    assert {(n["string"], n["fret"])
+            for n in result["measures"][0]["beats"][0]["notes"]} == {
+        (1, 2), (2, 3), (3, 2), (4, 4), (5, 2)}
+
+
+def test_voicing_is_applied_before_the_chord_rename_that_needs_it():
+    """같은 배치에서 순서가 뒤여도 코드명 보정이 새 보이싱을 쓸 수 있어야 한다."""
+    ir = _ir(_measure(0, [_beat([(5, 0)], chord="Am", from_chord=True)]))
+    result, outcome = corrections.apply_corrections(ir, [
+        {"op": "chord", "measure": 0, "beat": 0, "name": "Bm7"},
+        {"op": "voicing", "name": "Bm7", "frets": [2, 3, 2, 4, 2, -1]}])
+
+    assert len(outcome.applied) == 2, _reasons(outcome)
+    assert result["measures"][0]["beats"][0]["chord"] == "Bm7"
 
 
 def test_voicing_fills_unknown_chord():
@@ -262,9 +382,8 @@ def test_ai_voicing_becomes_a_chord_diagram(tmp_path):
 
 def test_hand_verified_voicing_wins_over_ai():
     ir = _ir(ai_voicings={"G": [[1, 0], [2, 0], [3, 0], [4, 0], [5, 0], [6, 0]]})
-    from tab_pdf import chords
 
-    assert build.voicing_for(ir, "G") == chords.VOICINGS["G"]
+    assert chords.voicing_in(ir, "G") == chords.VOICINGS["G"]
 
 
 # ── ai: 설정과 파싱 ──────────────────────────────────────────────────────────
@@ -388,3 +507,72 @@ def test_rejected_corrections_become_warnings():
 
     kinds = [w["kind"] for w in result["warnings"]]
     assert kinds == ["ai_rejected", "ai_rejected"], "폐기를 조용히 넘기면 안 된다"
+
+
+def test_a_batch_cannot_reach_outside_its_own_measures():
+    """환각이나 PDF 프롬프트 인젝션이 보지도 않은 마디를 고치면 안 된다."""
+    def ask(config, system, user):
+        # 앞 배치(마디 0..3)만 응답하고, 뒤 배치(마디 4..7)를 노린다
+        if '"measure": 0' not in user:
+            return {"corrections": []}
+        return {"corrections": [{"op": "chord", "measure": 7, "beat": 0,
+                                 "name": "Am"}]}
+
+    result, outcome = refine_and_assert(_four_measures(), ask)
+    assert not outcome.applied
+    assert result["measures"][7]["beats"][0]["chord"] is None
+    assert "밖의 마디" in outcome.rejected[0]["reason"]
+    assert [w["kind"] for w in result["warnings"]] == ["ai_rejected"]
+
+
+def test_voicing_is_allowed_to_cross_batches():
+    """보이싱은 마디에 매이지 않는다 — 범위 검사에 걸리면 안 된다."""
+    _, outcome = refine_and_assert(
+        _four_measures(),
+        lambda *_: {"corrections": [{"op": "voicing", "name": "Bm7",
+                                     "frets": [2, 3, 2, 4, 2, -1]}]},
+        limit=1)
+
+    assert len(outcome.applied) == 1, _reasons(outcome)
+
+
+def test_model_notes_are_stripped_of_terminal_control_characters():
+    """메모는 모델(→PDF) 출처라 신뢰 경계 밖이다. 그대로 찍으면 화면을 위조한다."""
+    result, _ = refine_and_assert(
+        _four_measures(),
+        lambda *_: {"corrections": [],
+                    "notes": "정상\x1b[2J\x07\x00 텍스트"},
+        limit=1)
+
+    note = result["refinement"]["model_notes"][0]
+    assert "\x1b" not in note and "\x07" not in note and "\x00" not in note
+    assert note.endswith("정상[2J 텍스트")
+
+
+def test_config_label_hides_url_secrets():
+    config = ai.Config(backend=ai.BACKEND_OPENAI, model="m",
+                       base_url="https://user:s3cr3t@host.example:8443/v1?key=abc")
+
+    assert config.label == "openai:m @ https://host.example:8443"
+    assert "s3cr3t" not in config.label and "abc" not in config.label
+
+
+# ── smufl: 기호 식별 ────────────────────────────────────────────────────────
+
+def test_smufl_names_the_glyphs_that_matter_for_techniques():
+    """구획 라벨만으로는 악센트인지 스타카토인지 알 수 없다 — 이름이 있어야 한다."""
+    assert smufl.name(chr(0xE4A1)) == "articAccentBelow"
+    assert smufl.label(chr(0xE4A1)) == "아티큘레이션"
+    assert smufl.codepoint(chr(0xE4A1)) == "U+E4A1"
+    assert smufl.name(chr(0xE0A9)) == "noteheadXBlack"
+    assert smufl.name(chr(0xE1E7)) == "augmentationDot"
+    assert smufl.name("가") is None, "평범한 글자에는 이름이 없다"
+    assert smufl.label("가") is None
+
+
+def test_smufl_names_stay_inside_their_declared_ranges():
+    """표와 구획이 어긋나면 라벨과 이름이 서로 다른 기호를 가리킨다."""
+    for code, name in smufl.NAMES.items():
+        char = chr(code)
+        assert smufl.in_range(char, smufl.PRIVATE_USE), f"{name} 이 사설영역 밖이다"
+        assert smufl.label(char) != "미분류기호", f"{name} 이 어느 구획에도 안 든다"

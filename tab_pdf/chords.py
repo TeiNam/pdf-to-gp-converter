@@ -30,3 +30,20 @@ def voicing_for(name: str | None) -> tuple[tuple[int, int], ...] | None:
     if name is None:
         return None
     return VOICINGS.get(name.strip())
+
+
+def voicing_in(ir: dict, name: str | None) -> tuple[tuple[int, int], ...] | None:
+    """손으로 검증한 표가 우선, 없으면 IR 에 실린 AI 보이싱.
+
+    검증된 표를 AI 가 덮지 못하게 하는 우선순위가 여기 한 곳에만 있어야 한다 —
+    build 와 corrections 가 각자 판단하면 언젠가 어긋난다.
+    """
+    verified = voicing_for(name)
+    if verified is not None:
+        return verified
+    if name is None:
+        return None
+    proposed = ir.get("ai_voicings", {}).get(name.strip())
+    if proposed is None:
+        return None
+    return tuple((string, fret) for string, fret in proposed)

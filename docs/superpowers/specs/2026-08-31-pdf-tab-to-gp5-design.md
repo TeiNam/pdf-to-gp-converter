@@ -135,7 +135,7 @@ p3 sys4 는 프렛 36개 + 슬래시 9개로 전환 구간이다.
 
 ## 5. guitar-pro-mcp 수정
 
-정본은 `guitar-pro-mcp-main/` (프로젝트 내 vendored). 원격 저장소가 없는 zip 배포본이라
+정본은 `mcp/` (프로젝트 내 vendored). 원격 저장소가 없는 zip 배포본이라
 직접 수정한다.
 
 ### 기존 버그 수정 4곳

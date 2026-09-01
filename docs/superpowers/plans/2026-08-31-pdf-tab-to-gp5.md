@@ -17,7 +17,7 @@
 ## 1. Global Constraints
 
 - Python 실행·의존성은 **전부 `uv`**. `pip` 금지. 추가는 `uv add`, 실행은 `uv run`.
-- 작업 디렉터리는 `guitar-pro-mcp-main/` (프로젝트 내 vendored MCP, 원격 없음).
+- 작업 디렉터리는 `mcp/` (프로젝트 내 vendored MCP, 원격 없음).
 - `mcp` 는 `>=0.2.0,<2` 고정. mcp 2.x 는 `FastMCP` → `MCPServer` 개명으로 이 코드베이스가 import 실패한다.
 - `.gp5` 읽기·쓰기는 **반드시 `encoding="cp949"`**. 기본 `cp1252` 는 한글에서 쓰기 `UnicodeEncodeError`, 읽기는 조용한 mojibake.
 - `pyguitarpro` 명시 필수: `NoteType.normal`, `BeatStatus.normal` (기본값은 `rest`, `empty`).
@@ -118,7 +118,7 @@ beat5 (6,0) | beat6 (3,1) | beat7 (1,0)+(2,3) | beat8 (3,1)
 
 | 파일 | 책임 |
 |---|---|
-| `guitar-pro-mcp-main/pyproject.toml` | 수정: `pymupdf` 추가, dev 에 `pytest`·`pytest-cov` |
+| `mcp/pyproject.toml` | 수정: `pymupdf` 추가, dev 에 `pytest`·`pytest-cov` |
 | `.../src/controllers/guitar_pro/file_operations.py` | 수정: `save_file`/`load_file` 에 `cp949` |
 | `.../src/run_mcp_server.py` | 수정: `print()` → logger (stdout 오염 제거) |
 | `.../src/utils/tab_pdf/__init__.py` | 신규: 패키지 마커 |
@@ -149,7 +149,7 @@ beat5 (6,0) | beat6 (3,1) | beat7 (1,0)+(2,3) | beat8 (3,1)
 - [ ] **Step 1: 의존성 추가**
 
 ```bash
-cd guitar-pro-mcp-main && uv add pymupdf && uv add --dev pytest pytest-cov
+cd mcp && uv add pymupdf && uv add --dev pytest pytest-cov
 ```
 
 `pytest` 는 `[project.optional-dependencies] dev` 에만 있어 `uv run pytest` 가 `ModuleNotFoundError`
@@ -225,7 +225,7 @@ def test_server_module_does_not_print_to_stdout():
 - [ ] **Step 3: 실패 확인**
 
 ```bash
-cd guitar-pro-mcp-main && uv run pytest tests/test_tab_pdf.py -v
+cd mcp && uv run pytest tests/test_tab_pdf.py -v
 ```
 
 기대: `test_save_and_load_preserve_korean` FAIL (`UnicodeEncodeError`),
@@ -243,7 +243,7 @@ cd guitar-pro-mcp-main && uv run pytest tests/test_tab_pdf.py -v
 - [ ] **Step 5: 통과 확인**
 
 ```bash
-cd guitar-pro-mcp-main && uv run pytest tests/test_tab_pdf.py -v
+cd mcp && uv run pytest tests/test_tab_pdf.py -v
 ```
 
 기대: 2 passed
@@ -251,10 +251,10 @@ cd guitar-pro-mcp-main && uv run pytest tests/test_tab_pdf.py -v
 - [ ] **Step 6: 커밋**
 
 ```bash
-git add guitar-pro-mcp-main/pyproject.toml guitar-pro-mcp-main/uv.lock \
-        guitar-pro-mcp-main/src/controllers/guitar_pro/file_operations.py \
-        guitar-pro-mcp-main/src/run_mcp_server.py \
-        guitar-pro-mcp-main/tests/test_tab_pdf.py
+git add mcp/pyproject.toml mcp/uv.lock \
+        mcp/src/controllers/guitar_pro/file_operations.py \
+        mcp/src/run_mcp_server.py \
+        mcp/tests/test_tab_pdf.py
 git commit -m "fix: cp949 인코딩·stdout 오염·테스트 의존성 수정"
 ```
 
@@ -330,7 +330,7 @@ def test_fit_reports_failure_instead_of_lying():
 - [ ] **Step 2: 실패 확인**
 
 ```bash
-cd guitar-pro-mcp-main && uv run pytest tests/test_synthetic.py -v
+cd mcp && uv run pytest tests/test_synthetic.py -v
 ```
 
 기대: FAIL — `ModuleNotFoundError: No module named 'utils.tab_pdf'`
@@ -440,7 +440,7 @@ def fit_durations(props: list[float],
 - [ ] **Step 4: 통과 확인**
 
 ```bash
-cd guitar-pro-mcp-main && uv run pytest tests/test_synthetic.py -v
+cd mcp && uv run pytest tests/test_synthetic.py -v
 ```
 
 기대: 5 passed
@@ -448,7 +448,7 @@ cd guitar-pro-mcp-main && uv run pytest tests/test_synthetic.py -v
 - [ ] **Step 5: 커밋**
 
 ```bash
-git add guitar-pro-mcp-main/src/utils/tab_pdf guitar-pro-mcp-main/tests/test_synthetic.py
+git add mcp/src/utils/tab_pdf mcp/tests/test_synthetic.py
 git commit -m "feat: 음길이 합제약 스냅 (x간격 비례 기반, PDF 비의존 순수 함수)"
 ```
 
@@ -573,7 +573,7 @@ def test_real_pdf_system1_coordinates():
 - [ ] **Step 2: 실패 확인**
 
 ```bash
-cd guitar-pro-mcp-main && uv run pytest tests/ -v
+cd mcp && uv run pytest tests/ -v
 ```
 
 기대: geometry 관련 전부 FAIL (`No module named 'utils.tab_pdf.geometry'`)
@@ -742,7 +742,7 @@ def measure_bounds(geo: PageGeometry, system: System) -> list[tuple[float, float
 - [ ] **Step 4: 통과 확인**
 
 ```bash
-cd guitar-pro-mcp-main && uv run pytest tests/ -v
+cd mcp && uv run pytest tests/ -v
 ```
 
 기대: 합성 3개 + 실제 2개 PASS (실제 PDF 없으면 2개 skip)
@@ -750,7 +750,7 @@ cd guitar-pro-mcp-main && uv run pytest tests/ -v
 - [ ] **Step 5: 커밋**
 
 ```bash
-git add guitar-pro-mcp-main/src/utils/tab_pdf/geometry.py guitar-pro-mcp-main/tests
+git add mcp/src/utils/tab_pdf/geometry.py mcp/tests
 git commit -m "feat: PDF 기하 수집과 시스템·마디선 검출 (14시스템/58마디)"
 ```
 
@@ -805,7 +805,7 @@ def test_looks_like_chord_rejects_page_numbers():
 - [ ] **Step 2: 실패 확인**
 
 ```bash
-cd guitar-pro-mcp-main && uv run pytest tests/test_synthetic.py -k chord -v
+cd mcp && uv run pytest tests/test_synthetic.py -k chord -v
 ```
 
 기대: FAIL — `No module named 'utils.tab_pdf.chords'`
@@ -852,7 +852,7 @@ def voicing_for(name: str | None) -> tuple[tuple[int, int], ...] | None:
 - [ ] **Step 4: 통과 확인**
 
 ```bash
-cd guitar-pro-mcp-main && uv run pytest tests/test_synthetic.py -k chord -v
+cd mcp && uv run pytest tests/test_synthetic.py -k chord -v
 ```
 
 기대: 3 passed. `looks_like_chord("H")` 가 True 로 나오면 정규식의 `[A-G]` 범위를 확인한다
@@ -861,7 +861,7 @@ cd guitar-pro-mcp-main && uv run pytest tests/test_synthetic.py -k chord -v
 - [ ] **Step 5: 커밋**
 
 ```bash
-git add guitar-pro-mcp-main/src/utils/tab_pdf/chords.py guitar-pro-mcp-main/tests/test_synthetic.py
+git add mcp/src/utils/tab_pdf/chords.py mcp/tests/test_synthetic.py
 git commit -m "feat: 코드 보이싱 표와 코드명 형태 판정 (미등록 코드는 None)"
 ```
 
@@ -1006,7 +1006,7 @@ def test_rejects_pdf_without_text_layer(tmp_path):
 - [ ] **Step 2: 실패 확인**
 
 ```bash
-cd guitar-pro-mcp-main && uv run pytest tests/ -v
+cd mcp && uv run pytest tests/ -v
 ```
 
 기대: extract 관련 FAIL (`No module named 'utils.tab_pdf.extract'`)
@@ -1281,7 +1281,7 @@ def extract_ir(pdf_path: str, tempo: int | None = None,
 - [ ] **Step 4: 통과 확인**
 
 ```bash
-cd guitar-pro-mcp-main && uv run pytest tests/ -v
+cd mcp && uv run pytest tests/ -v
 ```
 
 기대: 전부 PASS. 노트 수(1502)나 kind 분포가 어긋나면 `MAX_FRET_GLYPH_SIZE`·`TAB_BAND_MARGIN`·
@@ -1290,7 +1290,7 @@ cd guitar-pro-mcp-main && uv run pytest tests/ -v
 - [ ] **Step 5: 커밋**
 
 ```bash
-git add guitar-pro-mcp-main/src/utils/tab_pdf/extract.py guitar-pro-mcp-main/tests
+git add mcp/src/utils/tab_pdf/extract.py mcp/tests
 git commit -m "feat: IR 추출 — x간격 음길이, 슬래시 보이싱, 경고 수집"
 ```
 
@@ -1311,7 +1311,7 @@ git commit -m "feat: IR 추출 — x간격 음길이, 슬래시 보이싱, 경�
 - [ ] **Step 1: 스트로크 enum 이름 확인**
 
 ```bash
-cd guitar-pro-mcp-main && uv run python -c "
+cd mcp && uv run python -c "
 import guitarpro.models as m
 print([n for n in dir(m) if 'Stroke' in n])
 print(m.BeatEffect().stroke)
@@ -1396,7 +1396,7 @@ def test_synthetic_gp5_roundtrip(tmp_path):
 - [ ] **Step 3: 실패 확인**
 
 ```bash
-cd guitar-pro-mcp-main && uv run pytest tests/ -v
+cd mcp && uv run pytest tests/ -v
 ```
 
 기대: build 관련 FAIL (`No module named 'utils.tab_pdf.build'`)
@@ -1498,7 +1498,7 @@ def write_gp5(song: Song, file_path: str) -> None:
 - [ ] **Step 5: 통과 확인**
 
 ```bash
-cd guitar-pro-mcp-main && uv run pytest tests/ -v
+cd mcp && uv run pytest tests/ -v
 ```
 
 기대: 전부 PASS
@@ -1506,7 +1506,7 @@ cd guitar-pro-mcp-main && uv run pytest tests/ -v
 - [ ] **Step 6: 커밋**
 
 ```bash
-git add guitar-pro-mcp-main/src/utils/tab_pdf/build.py guitar-pro-mcp-main/tests
+git add mcp/src/utils/tab_pdf/build.py mcp/tests
 git commit -m "feat: IR -> .gp5 조립 (cp949, 스트로크 방향 기록, 58마디 왕복 검증)"
 ```
 
@@ -1618,7 +1618,7 @@ def test_import_tool_end_to_end(tmp_path):
 - [ ] **Step 2: 실패 확인**
 
 ```bash
-cd guitar-pro-mcp-main && uv run pytest tests/ -v
+cd mcp && uv run pytest tests/ -v
 ```
 
 기대: FAIL — `module 'mcp_tools' has no attribute 'default_output_path'`
@@ -1727,7 +1727,7 @@ def open_in_guitar_pro_impl(file_path: str) -> dict:
 - [ ] **Step 4: 통과 확인**
 
 ```bash
-cd guitar-pro-mcp-main && uv run pytest tests/ -v
+cd mcp && uv run pytest tests/ -v
 ```
 
 기대: 전부 PASS
@@ -1735,7 +1735,7 @@ cd guitar-pro-mcp-main && uv run pytest tests/ -v
 - [ ] **Step 5: MCP 서버 도구 목록 + stdout 청결성 확인**
 
 ```bash
-cd guitar-pro-mcp-main && printf '%s\n%s\n%s\n' \
+cd mcp && printf '%s\n%s\n%s\n' \
  '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"t","version":"1"}}}' \
  '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
  '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' \
@@ -1759,7 +1759,7 @@ for line in sys.stdin:
 - [ ] **Step 6: 실제 변환 end-to-end**
 
 ```bash
-cd guitar-pro-mcp-main && uv run python -c "
+cd mcp && uv run python -c "
 import sys; sys.path.insert(0, 'src')
 from controllers import GuitarProController
 import mcp_tools
@@ -1783,7 +1783,7 @@ print('저장   :', out)
 - [ ] **Step 7: 커밋**
 
 ```bash
-git add guitar-pro-mcp-main/src/mcp_tools.py guitar-pro-mcp-main/tests
+git add mcp/src/mcp_tools.py mcp/tests
 git commit -m "feat: import_tab_pdf / open_in_guitar_pro MCP 도구 추가"
 ```
 

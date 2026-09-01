@@ -5,7 +5,7 @@
             "command": "uv",
             "args": [
                 "--directory",
-                "/Users/teinam/orca/projects/gpx-converter/guitar-pro-mcp-main",
+                "/Users/teinam/orca/projects/gpx-converter/mcp",
                 "run",
                 "-m",
                 "src.run_mcp_server"

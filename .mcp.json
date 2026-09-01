@@ -5,10 +5,9 @@
             "command": "uv",
             "args": [
                 "--directory",
-                "/Users/teinam/orca/projects/gpx-converter/mcp",
+                "/Users/teinam/orca/projects/gpx-converter",
                 "run",
-                "-m",
-                "src.run_mcp_server"
+                "mcp/run_mcp_server.py"
             ]
         }
     }

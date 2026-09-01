@@ -7,7 +7,7 @@
 import pathlib
 import sys
 
-sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "src"))
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "mcp"))
 
 import guitarpro as gp
 import pytest
@@ -60,7 +60,7 @@ def test_save_and_load_preserve_korean(tmp_path):
 def test_server_module_does_not_print_to_stdout():
     """stdio 서버는 stdout 에 MCP 메시지 외 아무것도 쓰지 않아야 한다."""
     source = (pathlib.Path(__file__).resolve().parents[1]
-              / "src" / "run_mcp_server.py").read_text(encoding="utf-8")
+              / "mcp" / "run_mcp_server.py").read_text(encoding="utf-8")
     offending = [line.strip() for line in source.splitlines()
                  if line.strip().startswith("print(")]
     assert not offending, f"stdout 오염: {offending}"
@@ -69,7 +69,7 @@ def test_server_module_does_not_print_to_stdout():
 # ── 실제 PDF 기반 ────────────────────────────────────────────────────────────
 import pymupdf
 
-PDF = pathlib.Path(__file__).resolve().parents[2] / "pdf" / "나는반딧불.pdf"
+PDF = pathlib.Path(__file__).resolve().parents[1] / "pdf" / "나는반딧불.pdf"
 needs_pdf = pytest.mark.skipif(not PDF.exists(), reason=f"입력 PDF 없음: {PDF}")
 
 

@@ -4,8 +4,7 @@ gp/
 out_proof.gp5
 *.ir.json
 __pycache__/
-.venv/
+.pytest_cache/
 .coverage
-mcp/.venv/
-mcp/*.egg-info/
-mcp/uv.lock
+.venv/
+uv.lock

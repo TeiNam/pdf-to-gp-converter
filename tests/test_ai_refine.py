@@ -22,9 +22,13 @@ def _beat(notes=(), *, lyric=None, chord=None, stroke=None, techniques=None,
             "notes": [{"string": s, "fret": f} for s, f in notes]}
 
 
-def _measure(index, beats):
-    return {"index": index, "time_sig": [4, 4], "kind": "fret",
-            "beats": beats, "glyphs": []}
+def _measure(index, beats, *, chord_row=None, chord_in_effect=None):
+    measure = {"index": index, "time_sig": [4, 4], "kind": "fret",
+               "beats": beats, "glyphs": []}
+    if chord_row is not None or chord_in_effect is not None:
+        measure["chord_row"] = [{"x": 0.0, "name": n} for n in (chord_row or ())]
+        measure["chord_in_effect"] = chord_in_effect
+    return measure
 
 
 def _ir(*measures, **extra):
@@ -252,6 +256,31 @@ def test_chord_name_applied_and_garbage_rejected():
     assert result["measures"][0]["beats"][1]["chord"] is None
 
 
+def test_chord_name_must_be_one_the_extractor_actually_read():
+    """프롬프트로만 막으면 모델이 낱글자를 다시 조립해 'Cadd9' 를 'C' 로 끊는다.
+
+    보이싱까지 함께 내면 음정 검증도 통과하므로, 관문에서 이름 자체를 막아야 한다.
+    """
+    ir = _ir(_measure(0, [_beat([(2, 3)])], chord_row=["Cadd9"]))
+    result, outcome = corrections.apply_corrections(ir, [
+        {"op": "voicing", "name": "C", "frets": [0, 1, 0, 2, 3, -1]},
+        {"op": "chord", "measure": 0, "beat": 0, "name": "C"}])
+
+    assert [c["op"] for c in outcome.applied] == ["voicing"]
+    assert "코드 행에서 읽은 이름이 아니다" in _reasons(outcome)[0]
+    assert result["measures"][0]["beats"][0]["chord"] is None
+
+
+def test_chord_carried_over_from_an_earlier_measure_is_accepted():
+    """줄바꿈을 넘어 유지되는 코드도 그 마디에서 쓸 수 있는 이름이다."""
+    ir = _ir(_measure(0, [_beat([(2, 3)])], chord_row=[], chord_in_effect="Am"))
+    result, outcome = corrections.apply_corrections(ir, [
+        {"op": "chord", "measure": 0, "beat": 0, "name": "Am"}])
+
+    assert len(outcome.applied) == 1, _reasons(outcome)
+    assert result["measures"][0]["beats"][0]["chord"] == "Am"
+
+
 def test_chord_with_a_voicing_from_the_same_batch_is_accepted():
     """새 코드는 voicing 보정을 같이 내면 순서와 무관하게 통과해야 한다."""
     ir = _ir(_measure(0, [_beat([(2, 3)])]))
@@ -459,13 +488,25 @@ def test_a_partial_voicing_that_only_omits_the_fifth_is_accepted(name, frets, to
     assert len(outcome.applied) == 1, f"{name} {tones}: {_reasons(outcome)}"
 
 
-def test_a_lone_root_never_passes_as_a_chord():
-    """근음 하나가 어떤 코드로든 통과하면 검증이 무의미하다."""
-    for name in ("C", "B5", "Bm7", "Cadd9"):
-        _, outcome = corrections.apply_corrections(
-            _ir(), [{"op": "voicing", "name": name,
-                     "frets": [-1, -1, -1, -1, 3, -1]}])       # C 하나
-        assert not outcome.applied, f"{name} 이 단음으로 통과했다"
+@pytest.mark.parametrize("name, root_fret", [
+    # 손으로 검증한 표(VOICINGS)에 없는 이름을 쓴다 — 있으면 그쪽 규칙에 먼저 걸린다
+    ("C", 3),           # 5번줄 3프렛 = C
+    ("B5", 2),          # 5번줄 2프렛 = B — '5' 는 5도가 필수라 이 경로가 따로다
+    ("Bm7", 2),
+    ("Dadd9", 5),       # 5번줄 5프렛 = D
+])
+def test_a_lone_root_never_passes_as_a_chord(name, root_fret):
+    """근음 하나가 어떤 코드로든 통과하면 검증이 무의미하다.
+
+    각 코드의 **자기 근음**을 짚는다 — 아무 단음이나 쓰면 부분집합 검사에서
+    먼저 걸려 정작 필수음 경로를 지나가지 않는다.
+    """
+    _, outcome = corrections.apply_corrections(
+        _ir(), [{"op": "voicing", "name": name,
+                 "frets": [-1, -1, -1, -1, root_fret, -1]}])
+
+    assert not outcome.applied, f"{name} 이 근음 단음으로 통과했다"
+    assert "주장하는 음이 빠졌다" in _reasons(outcome)[0]
 
 
 @pytest.mark.parametrize("name, frets, why", [

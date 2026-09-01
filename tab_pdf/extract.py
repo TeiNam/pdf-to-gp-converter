@@ -467,7 +467,8 @@ def _beat_notes(fret_glyphs, beat_x, system, index, warn) -> list[dict]:
 
 def _build_measure(geo, system, bounds, index, tokens, warn,
                    time_sig: tuple[int, int], letter_index,
-                   syllables: list[tuple[float, str]]) -> dict:
+                   syllables: list[tuple[float, str]],
+                   carried_chord: str | None = None) -> dict:
     x0, x1 = bounds
     fret_glyphs = _fret_glyphs(geo, system, x0, x1, letter_index)
     slash_xs = _slash_xs(geo, system, x0, x1)
@@ -486,7 +487,7 @@ def _build_measure(geo, system, bounds, index, tokens, warn,
         # 'Cadd9' 를 'C' 로 끊는 오독이 생긴다 — 읽은 결과를 그대로 넘긴다.
         "chord_row": [{"x": round(x, 1), "name": name} for x, name in tokens
                       if x0 <= x < x1],
-        "chord_in_effect": _chord_at(tokens, x0),
+        "chord_in_effect": _chord_at(tokens, x0) or carried_chord,
     }
     if not beat_xs:
         warn.add(index, "empty_measure", f"판정 {kind}, x {x0:.1f}..{x1:.1f}")
@@ -554,6 +555,7 @@ def extract_ir(pdf_path: str, tempo: int | None = None,
     saw_text = False
 
     time_sig = DEFAULT_TIME_SIG
+    carried_chord: str | None = None
     with pymupdf.open(pdf_path) as document:
         for page in document:
             geo = geometry.load_page_geometry(page)
@@ -577,7 +579,11 @@ def extract_ir(pdf_path: str, tempo: int | None = None,
                 for bounds in all_bounds:
                     measures.append(_build_measure(
                         geo, system, bounds, len(measures), tokens, warn,
-                        time_sig, letter_index, syllables))
+                        time_sig, letter_index, syllables, carried_chord))
+                # 코드는 줄바꿈을 넘어 유지된다. 시스템마다 tokens 가 새로
+                # 시작하므로, 다음 시스템 첫 마디가 "코드 없음" 이 되지 않게 넘긴다
+                if tokens:
+                    carried_chord = tokens[-1][1]
 
     if not saw_text:
         raise NotATabPdf(

@@ -81,21 +81,23 @@ def _index_of(value, label: str) -> tuple[int | None, str | None]:
     return value, None
 
 
-def _beat_at(measures: dict, correction: dict) -> tuple[dict | None, str | None]:
-    """보정이 가리키는 beat. 못 찾으면 이유를 함께 돌려준다."""
+def _beat_at(measures: dict,
+             correction: dict) -> tuple[dict | None, dict | None, str | None]:
+    """보정이 가리키는 (마디, beat). 못 찾으면 이유를 함께 돌려준다."""
     measure_index, reason = _index_of(correction.get("measure"), "measure")
     if reason:
-        return None, reason
+        return None, None, reason
     measure = measures.get(measure_index)
     if measure is None:
-        return None, f"마디 {measure_index} 가 없다"
+        return None, None, f"마디 {measure_index} 가 없다"
     beat_index, reason = _index_of(correction.get("beat"), "beat")
     if reason:
-        return None, reason
+        return None, None, reason
     if not 0 <= beat_index < len(measure["beats"]):
-        return None, (f"마디 {measure['index']} 의 beat 는 "
-                      f"0..{len(measure['beats']) - 1} 인데 {beat_index} 를 가리켰다")
-    return measure["beats"][beat_index], None
+        return None, None, (f"마디 {measure['index']} 의 beat 는 "
+                            f"0..{len(measure['beats']) - 1} 인데 "
+                            f"{beat_index} 를 가리켰다")
+    return measure, measure["beats"][beat_index], None
 
 
 def _apply_technique(measures: dict, correction: dict) -> str | None:
@@ -106,7 +108,7 @@ def _apply_technique(measures: dict, correction: dict) -> str | None:
     표기다 — 줄을 요구하면 모델이 근거 없이 하나를 고르게 되고, 스트럼 화음
     6개 음 중 1개만 악센트가 되어 원본과 다른 악보가 나온다.
     """
-    beat, reason = _beat_at(measures, correction)
+    _, beat, reason = _beat_at(measures, correction)
     if reason:
         return reason
     kind = correction.get("kind")
@@ -146,7 +148,7 @@ def _apply_chord(ir: dict, measures: dict, correction: dict,
     그 beat 의 음이 코드에서 만들어진 것(`from_chord`)이면 새 코드의 보이싱으로
     다시 만든다. 이름만 갈면 다이어그램은 새 코드인데 소리는 이전 코드가 난다.
     """
-    beat, reason = _beat_at(measures, correction)
+    measure, beat, reason = _beat_at(measures, correction)
     if reason:
         return reason
     name, reason = _chord_name(correction)
@@ -157,6 +159,13 @@ def _apply_chord(ir: dict, measures: dict, correction: dict,
         return f"이 beat 에 이미 다른 코드 보정을 적용했다 — {name} 은 버린다"
     if beat.get("chord") == name:
         return f"이미 {name} 다"
+    readable = _readable_chord_names(measure)
+    if readable is not None and name not in readable:
+        # 추출기가 코드 행에서 읽은 이름만 받는다. 프롬프트로만 막으면 모델이
+        # 낱글자를 다시 조립해 'Cadd9' 를 'C' 로 끊는 오독을 되풀이한다 —
+        # 실측으로 반복된 오류라 관문에서 강제한다.
+        return (f"{name} 은 이 마디 코드 행에서 읽은 이름이 아니다 "
+                f"(읽은 이름: {sorted(readable) or '없음'})")
     # 보이싱이 없으면 build 가 다이어그램을 못 만들어 .gp5 에 코드가 아예 안 남는다.
     # IR 에만 남는 이름은 사용자에게 보이지 않으므로 여기서 거절해 경고로 드러낸다.
     voicing = chords.voicing_in(ir, name)
@@ -179,6 +188,20 @@ def _apply_chord(ir: dict, measures: dict, correction: dict,
     beat["chord"] = name
     claimed.add(key)
     return None
+
+
+def _readable_chord_names(measure: dict) -> set[str] | None:
+    """이 마디에 표기됐거나 앞에서 이어지는 코드명.
+
+    `chord_row` 자체가 없는 IR 은 대조할 근거가 없다는 뜻이라 None 을 돌려
+    검사를 건너뛴다 — 빈 집합으로 두면 모든 코드 보정이 막힌다.
+    """
+    if "chord_row" not in measure:
+        return None
+    names = {token["name"] for token in measure["chord_row"]}
+    if measure.get("chord_in_effect"):
+        names.add(measure["chord_in_effect"])
+    return names
 
 
 def _chord_name(correction: dict) -> tuple[str | None, str | None]:

@@ -3,7 +3,8 @@
 import guitarpro as gp
 from guitarpro.models import (
     Beat, BeatStatus, BeatStrokeDirection, BendEffect, BendPoint, BendType,
-    Chord, Duration, GuitarString, LyricLine, Lyrics, Measure, MeasureHeader,
+    Chord, Duration, GuitarString, KeySignature, LyricLine, Lyrics, Measure,
+    MeasureHeader,
     NaturalHarmonic, Note, NoteType, SlideType, Song, TimeSignature, Track,
     Voice,
 )
@@ -22,6 +23,18 @@ STROKE_VALUE = 1
 GUITAR_STRINGS = 6
 # GP5 는 가사 줄 5개를 갖는다. 우리는 첫 줄만 쓴다 (곡 전체가 한 줄에 들어간다)
 LYRIC_LINE_COUNT = 5
+# 가사를 붙일 트랙 번호. GP5 의 trackChoice 는 "가사를 묶을 트랙을 가리키는 int"
+# 이고 트랙은 1부터 센다. 0 을 넣으면 어느 트랙에도 묶이지 않아 GP 가 가사를
+# 아예 그리지 않는다 — 실측으로 확인한 버그다.
+LYRICS_TRACK = 1
+# 가사를 어디에 담을지. 둘의 차이는 "누가 음절을 beat 에 배정하는가" 다.
+#   row  : GP5 가사 줄. 텍스트 덩어리를 넘기면 **GP 가 알아서 음표에 분배한다**
+#          (GP7 파일에도 `<Lyrics dispatched="true">` 로 남아 있다). 가사 전용
+#          자리라 Lyrics 창에서 편집되지만, 분배 규칙이 문서화돼 있지 않다.
+#   beat : beat 별 텍스트. PDF x 좌표로 계산한 배정을 **그대로 박아 넣는다**.
+#          분배 규칙에 기대지 않으므로 어긋날 수 없다.
+LYRIC_MODES = ("row", "beat")
+DEFAULT_LYRIC_MODE = "row"
 # Chord.strings 에서 안 쓰는 줄을 나타내는 값
 UNUSED_STRING = -1
 
@@ -39,14 +52,36 @@ def _apply_stroke(beat: Beat, stroke: str | None) -> None:
     beat.effect.stroke.value = STROKE_VALUE
 
 
-def _lyrics_for(ir: dict) -> Lyrics | None:
-    """beat 에 배정된 음절을 GP5 가사 한 줄로 조립한다.
+def _key_signature(name: str) -> KeySignature | None:
+    """'C'·'Am'·'F#' 같은 조성 표기를 GP5 KeySignature 로. 모르면 None.
 
-    GP 는 공백으로 나뉜 토큰을 노트에 순서대로 붙인다. 음절이 없는 beat 는 빈
-    토큰으로 건너뛴다. 시작 마디는 첫 음절이 있는 마디다.
+    단조는 나란한장조와 조표가 같다 — GP5 도 조표만 담으므로 그렇게 눕힌다.
     """
-    start = next((m["index"] for m in ir["measures"]
-                  if any(b.get("lyric") for b in m["beats"])), None)
+    text = (name or "").strip().replace("♯", "#").replace("♭", "b")
+    if not text:
+        return None
+    relative_major = {"Am": "C", "Em": "G", "Bm": "D", "F#m": "A", "C#m": "E",
+                      "G#m": "B", "D#m": "F#", "Dm": "F", "Gm": "Bb",
+                      "Cm": "Eb", "Fm": "Ab", "Bbm": "Db"}
+    text = relative_major.get(text, text)
+    suffix = {"#": "Sharp", "b": "Flat"}.get(text[1:2], "")
+    return getattr(KeySignature, f"{text[0]}Major{suffix}", None)
+
+
+def _first_lyric_measure(ir: dict) -> int | None:
+    return next((measure["index"] for measure in ir["measures"]
+                 if any(beat.get("lyric") for beat in measure["beats"])), None)
+
+
+def _lyrics_for(ir: dict) -> Lyrics | None:
+    """beat 에 배정된 음절을 GP5 가사 줄로 조립한다.
+
+    음절이 없는 beat 는 빈 토큰으로 남겨 건너뛰기를 노린다. **이 부분은 검증되지
+    않았다** — GP 의 분배 규칙이 문서화돼 있지 않고, 연속 공백을 한 칸으로
+    접으면 음절이 앞으로 밀린다 (426 토큰 중 160개가 빈 토큰이다). 어긋나면
+    `beat` 모드를 쓴다.
+    """
+    start = _first_lyric_measure(ir)
     if start is None:
         return None
     tokens = [beat.get("lyric") or ""
@@ -54,7 +89,7 @@ def _lyrics_for(ir: dict) -> Lyrics | None:
               for beat in measure["beats"]]
     lines = [LyricLine(startingMeasure=start + 1, lyrics=" ".join(tokens))]
     lines += [LyricLine() for _ in range(LYRIC_LINE_COUNT - 1)]
-    return Lyrics(trackChoice=0, lines=lines)
+    return Lyrics(trackChoice=LYRICS_TRACK, lines=lines)
 
 
 # NoteEffect 의 boolean 플래그로 그대로 떨어지는 연주법.
@@ -152,19 +187,37 @@ def _make_chord_diagram(name: str,
     )
 
 
-def _make_header(measure_ir: dict) -> MeasureHeader:
+def _make_header(measure_ir: dict, key: KeySignature | None) -> MeasureHeader:
     header = MeasureHeader(number=measure_ir["index"] + 1)
     numerator, denominator = measure_ir["time_sig"]
     signature = TimeSignature()
     signature.numerator = numerator
     signature.denominator.value = denominator
     header.timeSignature = signature
+    if key is not None:
+        header.keySignature = key
     return header
 
 
-def build_song(ir: dict) -> Song:
+def build_song(ir: dict, *, lyric_mode: str = DEFAULT_LYRIC_MODE) -> Song:
+    """IR 을 pyguitarpro Song 으로 만든다.
+
+    `lyric_mode` 는 가사를 어디에 담을지 고른다 — LYRIC_MODES 주석 참고.
+    """
+    if lyric_mode not in LYRIC_MODES:
+        raise ValueError(f"lyric_mode 는 {' | '.join(LYRIC_MODES)} 중 하나여야 합니다: "
+                         f"{lyric_mode!r}")
+    credits = ir.get("credits", {})
     song = Song(title=ir.get("title", ""), artist=ir.get("artist", ""),
-                tempo=ir.get("tempo", 80))
+                tempo=ir.get("tempo", 80),
+                # 악보 머리글에서 읽은 것 — 버리면 크레디트가 사라진다
+                subtitle=ir.get("rhythm", ""),
+                words=credits.get("words", ""),
+                music=credits.get("music", ""),
+                tab=credits.get("arranger", ""))
+    key = _key_signature(ir.get("key", ""))
+    if key is not None:
+        song.key = key
     song.tracks.clear()
     song.measureHeaders.clear()
 
@@ -176,7 +229,7 @@ def build_song(ir: dict) -> Song:
 
     previous_chord = None
     for measure_ir in ir["measures"]:
-        header = _make_header(measure_ir)
+        header = _make_header(measure_ir, key)
         song.measureHeaders.append(header)
 
         measure = Measure(track, header)
@@ -196,6 +249,9 @@ def build_song(ir: dict) -> Song:
                 ))
             _apply_stroke(beat, beat_ir.get("stroke"))
             _apply_techniques(beat, beat_ir.get("techniques", ()))
+            if lyric_mode == "beat":
+                # x 좌표로 계산한 배정을 그대로 박는다 — GP 의 분배 규칙을 안 탄다
+                beat.text = beat_ir.get("lyric") or None
             chord_name = beat_ir.get("chord")
             if chord_name and chord_name != previous_chord:
                 diagram = _make_chord_diagram(
@@ -210,9 +266,10 @@ def build_song(ir: dict) -> Song:
         track.measures.append(measure)
 
     song.tracks.append(track)
-    lyrics = _lyrics_for(ir)
-    if lyrics is not None:
-        song.lyrics = lyrics
+    if lyric_mode == "row":
+        lyrics = _lyrics_for(ir)
+        if lyrics is not None:
+            song.lyrics = lyrics
     return song
 
 

@@ -58,8 +58,13 @@ TECHNIQUE_ANNOTATION = frozenset(".DU")
 LYRIC_MIN_CODEPOINT = 0x1100
 # SMuFL 음악 기호는 유니코드 사설 영역에 있어 위 하한을 그냥 넘는다 — 제외해야 한다
 PRIVATE_USE_RANGE = (0xE000, 0xF8FF)
-# 음절을 beat 에 붙일 x 허용 오차 (pt). beat 간격 ≈15, 음절 폭 ≈10
-LYRIC_SNAP_DISTANCE = 12.0
+# 음절-beat 거리에는 상한을 두지 않는다. 실측 분포가 p50=2.8 / p99=12.3 /
+# 최대 20.3pt 인데 beat 간격도 5.2~30.6pt 로 넓어서, 이상치를 걸러낼 만큼 낮은
+# 상한은 진짜 음절부터 버린다 (12.0 으로 두었을 때 4개 유실). 가사가 아닌 글리프는
+# 아래 한글 하한이 걸러낸다 — 이 악보에서 96자를 제외하고 317자를 정확히 남긴다.
+# 늘임표 — 앞 음절이 다음 음까지 이어진다는 표시. 자기 음 위치를 차지하지만
+# GP5 가사에는 담을 자리가 없어 반영하지 않는다.
+LYRIC_HOLD_MARK = "-"
 SMUFL_REST_RANGE = (0xE4E0, 0xE4FF)             # 타브 대역에 나오면 경고
 SMUFL_STROKE_DOWN = ""
 SMUFL_STROKE_UP = ""
@@ -279,19 +284,25 @@ def _techniques(geo, system, x0, x1, fret_glyphs, letter_index) -> list[dict]:
     return result
 
 
-def _lyric_syllables(geo, system) -> list[tuple[float, str]]:
+def _lyric_syllables(geo, system, index, warn) -> list[tuple[float, str]]:
     """멜로디 staff 와 타브 staff 사이의 가사 음절을 (x, 글자) 로 뽑는다."""
     low, high = system.melody_ys[-1], system.tab_ys[0]
-    return sorted(
-        ((g.x, g.char) for g in geo.glyphs
-         if low < g.y < high and ord(g.char) >= LYRIC_MIN_CODEPOINT
-         and not _in_range(g.char, PRIVATE_USE_RANGE)),
-        key=lambda pair: pair[0],
-    )
+    band = [g for g in geo.glyphs if low < g.y < high
+            and not _in_range(g.char, PRIVATE_USE_RANGE)]
+    syllables = sorted(((g.x, g.char) for g in band
+                        if ord(g.char) >= LYRIC_MIN_CODEPOINT),
+                       key=lambda pair: pair[0])
+    # 가사가 있는 시스템에서만 센다 — 이 대역에는 'S.D' 같은 연주법 표기도 놓인다
+    holds = sum(1 for g in band if g.char == LYRIC_HOLD_MARK)
+    if syllables and holds:
+        warn.add(index, "lyric_hold",
+                 f"늘임표 {LYRIC_HOLD_MARK!r} {holds}개를 반영하지 못했다 "
+                 f"— 앞 음절이 다음 음까지 늘어난다는 표시다")
+    return syllables
 
 
-def _assign_lyrics(beat_xs: list[float],
-                   syllables: list[tuple[float, str]]) -> dict[float, str]:
+def _assign_lyrics(beat_xs: list[float], syllables: list[tuple[float, str]],
+                   index: int, warn: _Warnings) -> dict[float, str]:
     """음절을 x 가 가장 가까운 beat 에 배정한다.
 
     조판된 악보에서 x 는 시간 위치다. 같은 x 의 기타 beat 에 붙이면 노래하는
@@ -302,11 +313,22 @@ def _assign_lyrics(beat_xs: list[float],
     "나는내가빛나는" 에서 "나빛나는" 처럼 망가진다.
     """
     if not beat_xs:
+        if syllables:
+            warn.add(index, "lyric_lost",
+                     f"beat 이 없어 음절 {len(syllables)}개를 버렸다: "
+                     f"{''.join(char for _, char in syllables)!r}")
         return {}
     assigned: dict[float, str] = {}
+    crowded = 0
     for syllable_x, char in syllables:
         beat_x = min(beat_xs, key=lambda bx: abs(bx - syllable_x))
+        if beat_x in assigned:
+            crowded += 1
         assigned[beat_x] = assigned.get(beat_x, "") + char
+    if crowded:
+        warn.add(index, "lyric_crowding",
+                 f"음절 {crowded}개가 앞 음절과 같은 beat 에 묶였다 "
+                 f"— 보컬이 기타보다 잔 리듬을 쓴다")
     return assigned
 
 
@@ -379,7 +401,7 @@ def _build_measure(geo, system, bounds, index, tokens, warn,
     techniques = _techniques(geo, system, x0, x1, fret_glyphs, letter_index)
     beat_xs = _cluster([g.x for g in fret_glyphs] + slash_xs)
     lyrics = _assign_lyrics(
-        beat_xs, [(x, c) for x, c in syllables if x0 <= x < x1])
+        beat_xs, [(x, c) for x, c in syllables if x0 <= x < x1], index, warn)
     measure = {"index": index, "time_sig": list(time_sig),
                "kind": kind, "beats": []}
     if not beat_xs:
@@ -462,7 +484,8 @@ def extract_ir(pdf_path: str, tempo: int | None = None,
                                  f"{detected[0]}/{detected[1]} 박자를 감지했다 "
                                  f"— 이 경로는 실제 악보로 검증되지 않았다")
                 tokens = _chord_tokens(geo, system, all_bounds[-1][1] + 1.0)
-                syllables = _lyric_syllables(geo, system)
+                syllables = _lyric_syllables(
+                    geo, system, len(measures), warn)
                 for bounds in all_bounds:
                     measures.append(_build_measure(
                         geo, system, bounds, len(measures), tokens, warn,

@@ -28,6 +28,7 @@ IR_SUFFIX = ".json"
 DEFECT_KINDS = frozenset({
     "duration_mismatch", "empty_measure", "empty_beat",
     "unknown_chord", "unsnapped_digit", "time_signature",
+    "lyric_lost",
 })
 
 
@@ -83,7 +84,8 @@ def _report(ir: dict, output: str) -> int:
     if informational:
         summary = collections.Counter(w["kind"] for w in informational)
         print(f"미반영 : {sum(summary.values())}건 {dict(summary)}"
-              " — 음정·리듬은 옮겼지만 아티큘레이션·연주법은 반영하지 못했다")
+              " — 음정·리듬·연주법·가사는 옮겼고, 아티큘레이션·쉼표·"
+              "가사 늘임표는 반영하지 못했다")
     if defects:
         print(f"\n결함성 경고 {len(defects)}건 — 결과를 그대로 믿지 말 것:",
               file=sys.stderr)

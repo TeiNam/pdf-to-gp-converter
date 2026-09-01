@@ -1,0 +1,42 @@
+[project]
+name = "pdf-to-gp-converter"
+version = "0.1.0"
+description = "PDF 기타 타브 악보 -> Guitar Pro .gp5 변환 CLI"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = [
+    "boto3>=1.43.85",
+    "openai>=3.6.0",
+    "pyguitarpro>=0.7.0",
+    "pymupdf>=1.28.2",
+    "python-dotenv>=1.2.3",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "pytest-cov>=7.1.0",
+]
+
+[tool.uv]
+# 설치형 패키지가 아니라 로컬 도구다. `uv run convert.py ...` 로 쓴다.
+package = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+python_files = ["test_*.py"]
+addopts = "-v --cov=tab_pdf --cov=convert"
+
+[tool.black]
+line-length = 88
+target-version = ["py310"]
+
+[tool.isort]
+profile = "black"
+line_length = 88
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_configs = true

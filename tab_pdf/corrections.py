@@ -192,19 +192,26 @@ def _chord_name(correction: dict) -> tuple[str | None, str | None]:
 
 
 def _voicing_mismatch(name: str, voicing, tuning) -> str:
-    """왜 안 맞는지 구체적으로 말한다 — '틀렸다' 만으론 고칠 수 없다."""
+    """왜 안 맞는지 구체적으로 말한다 — '틀렸다' 만으론 고칠 수 없다.
+
+    검사 순서는 `chords.voicing_matches` 와 같아야 한다. 어긋나면 실제로 걸린
+    이유가 아닌 항목을 지목해 "최저음은 4여야 하는데 4다" 같은 모순이 나온다.
+    """
     spec = chords.parse(name)
     played = chords.voicing_pitch_classes(voicing, tuning)
     extra = sorted(played - spec.classes)
     if extra:
         return f"이 프렛은 {name} 에 없는 음을 낸다 (반음값 {extra})"
-    if spec.root not in played:
-        return f"이 프렛에 {name} 의 근음(반음값 {spec.root})이 없다"
-    if spec.bass is not None:
-        return (f"{name} 의 최저음은 반음값 {spec.bass} 여야 하는데 "
-                f"{chords._lowest_pitch_class(voicing, tuning)} 다")
-    return (f"음이 {len(played)}개뿐이라 {name} 화음이라고 볼 수 없다 "
-            f"(최소 {min(chords.MIN_CHORD_TONES, len(spec.classes))}개)")
+    missing = sorted(spec.required - played)
+    if missing:
+        return (f"{name} 이 주장하는 음이 빠졌다 (반음값 {missing}) "
+                f"— 다른 코드가 된다")
+    minimum = min(chords.MIN_CHORD_TONES, len(spec.classes))
+    if len(played) < minimum:
+        return (f"음이 {len(played)}개뿐이라 {name} 화음이라고 볼 수 없다 "
+                f"(최소 {minimum}개)")
+    lowest = chords.lowest_pitch_class(voicing, tuning)
+    return (f"{name} 의 최저음은 반음값 {spec.bass} 여야 하는데 {lowest} 다")
 
 
 def _validate_frets(frets) -> str | None:

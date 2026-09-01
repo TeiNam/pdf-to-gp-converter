@@ -304,3 +304,41 @@ def test_lyric_extraction_excludes_music_glyphs():
     assert extract._in_range("", extract.PRIVATE_USE_RANGE)   # noteheadBlack
     assert not extract._in_range("나", extract.PRIVATE_USE_RANGE)
     assert ord("") >= extract.LYRIC_MIN_CODEPOINT, "하한만으로는 못 걸러낸다"
+
+
+@needs_pdf
+def test_extractor_never_leaves_a_technique_without_a_note_to_hold_it():
+    """줄이 지정된 연주법은 그 beat 에 그 줄의 음이 있어야 한다.
+
+    이 불변식이 깨지면 build 가 연주법을 조용히 버린다. AI 보정 쪽에는
+    `corrections` 가 같은 검사를 하지만 1차 추출에는 관문이 없으므로,
+    코드가 아니라 테스트로 못박아 둔다.
+    """
+    from tab_pdf import extract
+
+    ir = extract.extract_ir(str(PDF))
+    orphans = [
+        (measure["index"], position, technique)
+        for measure in ir["measures"]
+        for position, beat in enumerate(measure["beats"])
+        for technique in beat["techniques"]
+        if technique["string"] is not None
+        and technique["string"] not in {n["string"] for n in beat["notes"]}
+    ]
+    assert not orphans, f"붙을 음이 없는 연주법 {len(orphans)}개: {orphans[:3]}"
+
+
+@needs_pdf
+def test_chord_derived_beats_carry_no_extractor_techniques():
+    """`from_chord` beat 에 연주법이 붙으면 코드명 보정이 그것을 고아로 만들 수 있다.
+
+    추출기 구조상 연주법은 프렛 글리프 x 에 걸리고 `from_chord` beat 은 슬래시
+    글리프에서 오므로 겹치지 않는다. 이 추론이 계속 참인지 실제 악보로 확인한다.
+    """
+    from tab_pdf import extract
+
+    ir = extract.extract_ir(str(PDF))
+    offenders = [(m["index"], i) for m in ir["measures"]
+                 for i, b in enumerate(m["beats"])
+                 if b["from_chord"] and b["techniques"]]
+    assert not offenders, f"from_chord beat 에 연주법이 있다: {offenders[:5]}"

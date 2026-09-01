@@ -39,8 +39,8 @@ def name_fits(name: str, encoding: str = "cp949") -> bool:
 _ROOTS = {"C": 0, "D": 2, "E": 4, "F": 5, "G": 7, "A": 9, "B": 11}
 SEMITONES = 12
 
-# 코드 성질 → 근음 기준 반음 간격. 긴 이름이 먼저 매치되도록 정렬해서 쓴다
-# ('m7b5' 가 'm7' 로 잘리면 안 된다).
+# 코드 성질 → 근음 기준 반음 간격. 이름은 정확히 일치해야 한다 (접두어 매칭이
+# 아니다) — 'm7b5' 가 'm7' 로 잘리면 감5도가 완전5도로 바뀐다.
 _QUALITIES: dict[str, tuple[int, ...]] = {
     "": (0, 4, 7),
     "5": (0, 7),
@@ -79,6 +79,25 @@ _QUALITIES: dict[str, tuple[int, ...]] = {
 # "부분집합" 이라 통과해버린다. 파워코드(5)처럼 성질 자체가 2음이면 그 수를 쓴다.
 MIN_CHORD_TONES = 3
 
+# 완전5도는 어느 코드에서든 생략한다 — 기타에서 가장 흔한 생략이다.
+PERFECT_FIFTH = 7
+# 5도 말고도 실제 연주에서 빼는 음. 확장 코드는 6줄에 다 담기지 않는다.
+# 표준 C11 은 11도와 부딪치는 3도를 빼고, 표준 C13 은 9도를 뺀다.
+_OPTIONAL_INTERVALS: dict[str, frozenset[int]] = {
+    "11": frozenset({2, 4}),
+    "13": frozenset({2}),
+}
+
+
+def _required_intervals(quality: str) -> frozenset[int]:
+    """이름이 주장하는 음 중 반드시 울려야 하는 것.
+
+    코드명이 7th·9th·6th 를 말하면 그 음이 없으면 다른 코드다 — B·D·F# 를
+    `Bm7` 이라 부르면 7도(A)가 없으니 그냥 Bm 이다.
+    """
+    optional = _OPTIONAL_INTERVALS.get(quality, frozenset()) | {PERFECT_FIFTH}
+    return frozenset(_QUALITIES[quality]) - optional
+
 
 @dataclass(frozen=True)
 class ChordSpec:
@@ -86,6 +105,7 @@ class ChordSpec:
 
     root: int
     classes: frozenset[int]
+    required: frozenset[int]        # 없으면 다른 코드가 되는 음
     bass: int | None = None         # 분수 코드의 베이스 (`G/B` 의 B)
 
 
@@ -126,9 +146,12 @@ def parse(name: str) -> ChordSpec | None:
     if intervals is None:
         return None
     classes = {(root + step) % SEMITONES for step in intervals}
+    required = {(root + step) % SEMITONES for step in _required_intervals(quality)}
     if bass is not None:
         classes.add(bass)
-    return ChordSpec(root=root, classes=frozenset(classes), bass=bass)
+        required.add(bass)
+    return ChordSpec(root=root, classes=frozenset(classes),
+                     required=frozenset(required), bass=bass)
 
 
 def pitch_classes(name: str) -> frozenset[int] | None:
@@ -144,7 +167,7 @@ def voicing_pitch_classes(voicing, tuning) -> frozenset[int]:
                      if 1 <= string <= len(tuning))
 
 
-def _lowest_pitch_class(voicing, tuning) -> int | None:
+def lowest_pitch_class(voicing, tuning) -> int | None:
     pitches = [tuning[string - 1] + fret for string, fret in voicing
                if 1 <= string <= len(tuning)]
     return min(pitches) % SEMITONES if pitches else None
@@ -155,21 +178,22 @@ def voicing_matches(name: str, voicing, tuning) -> bool | None:
 
     네 가지를 본다:
     1. 코드에 없는 음을 내지 않는다 — 실측 예: Bm7 에 개방현 6개(EADGBE)
-    2. 근음이 들어 있다
+    2. 이름이 주장하는 음이 다 있다 — B·D·F# 는 Bm7 이 아니라 Bm 이다
     3. 화음이라 부를 만큼 음이 있다 — 부분집합만 보면 B 한 음이 Bm7 로 통과한다
     4. 분수 코드면 지정된 베이스가 최저음이다 (`C/E` 의 최저음은 E)
 
-    코드 톤을 일부 빼먹는 것은 통과시킨다 — 5음 생략은 기타에서 흔하다.
+    5도 생략은 통과시킨다 — 기타에서 가장 흔한 생략이다. 확장 코드(11·13)에서
+    실제로 빼는 음도 `_OPTIONAL_INTERVALS` 에 적어 통과시킨다.
     """
     spec = parse(name)
     if spec is None:
         return None
     played = voicing_pitch_classes(voicing, tuning)
-    if not played <= spec.classes or spec.root not in played:
+    if not played <= spec.classes or not spec.required <= played:
         return False
     if len(played) < min(MIN_CHORD_TONES, len(spec.classes)):
         return False
-    if spec.bass is not None and _lowest_pitch_class(voicing, tuning) != spec.bass:
+    if spec.bass is not None and lowest_pitch_class(voicing, tuning) != spec.bass:
         return False
     return True
 

@@ -430,11 +430,13 @@ def test_voicing_never_overwrites_a_hand_verified_one():
     # 개방현 6개는 Bm7 이 아니다 (E·G 가 코드에 없다)
     ([0, 0, 0, 0, 0, 0], "없는 음을 낸다"),
     # 근음 B 하나만 짚으면 어떤 코드든 "부분집합" 이라 통과해버린다
-    ([-1, -1, -1, -1, 2, -1], "화음이라고 볼 수 없다"),
-    # 3음 미만은 화음이 아니다 (F#·B 만 — 5도 하나)
-    ([-1, -1, -1, 4, 2, -1], "화음이라고 볼 수 없다"),
+    ([-1, -1, -1, -1, 2, -1], "주장하는 음이 빠졌다"),
+    # F#·B 만 — 3도와 7도가 없으니 코드가 아니라 5도 하나다
+    ([-1, -1, -1, 4, 2, -1], "주장하는 음이 빠졌다"),
     # 근음이 빠진 보이싱 (D·F#·A = D 장3화음)
-    ([2, 3, 2, 0, -1, -1], "근음"),
+    ([2, 3, 2, 0, -1, -1], "주장하는 음이 빠졌다"),
+    # B·D·F# 는 7도(A)가 없으니 Bm7 이 아니라 Bm 이다
+    ([2, 3, 2, 4, -1, -1], "주장하는 음이 빠졌다"),
 ])
 def test_voicing_must_actually_sound_the_named_chord(frets, hint):
     """이름만 믿으면 악보가 조용히 틀린다."""
@@ -443,6 +445,39 @@ def test_voicing_must_actually_sound_the_named_chord(frets, hint):
 
     assert not outcome.applied, f"{frets} 가 Bm7 로 통과했다"
     assert hint in _reasons(outcome)[0]
+
+
+def test_minimum_tone_count_still_guards_two_note_qualities():
+    """required 만으로는 파워코드에서 근음 하나가 통과한다 (5도는 생략 가능)."""
+    _, outcome = corrections.apply_corrections(
+        _ir(), [{"op": "voicing", "name": "B5", "frets": [-1, -1, -1, -1, 2, -1]}])
+
+    assert not outcome.applied
+    assert "화음이라고 볼 수 없다" in _reasons(outcome)[0]
+
+
+@pytest.mark.parametrize("name, frets, why", [
+    # C·F·Bb·D — 11도와 부딪치는 3도, 그리고 5도를 뺀 표준 보이싱
+    ("C11", [-1, 3, 3, 3, 3, -1], "11도와 부딪치는 3도를 뺀 표준 보이싱"),
+    ("C13", [5, 3, 3, 2, 3, -1], "9도를 뺀 표준 보이싱"),
+    ("C6/9", [3, 3, 2, 2, 3, -1], "성질 이름에 '/' 가 든 코드"),
+])
+def test_extension_chords_that_omit_tones_in_practice_are_accepted(name, frets, why):
+    """확장 코드는 6줄에 다 안 담긴다 — 실제 보이싱을 거부하면 코드가 사라진다."""
+    _, outcome = corrections.apply_corrections(
+        _ir(), [{"op": "voicing", "name": name, "frets": frets}])
+
+    assert len(outcome.applied) == 1, f"{why}: {_reasons(outcome)}"
+
+
+def test_mismatch_reason_names_the_check_that_actually_failed():
+    """검사 순서가 어긋나면 '최저음은 4여야 하는데 4다' 같은 모순이 나온다."""
+    _, outcome = corrections.apply_corrections(
+        _ir(), [{"op": "voicing", "name": "C/E", "frets": [-1, -1, -1, 2, -1, -1]}])
+
+    reason = _reasons(outcome)[0]
+    assert "최저음" not in reason, reason
+    assert "주장하는 음이 빠졌다" in reason
 
 
 def test_voicing_may_omit_the_fifth():

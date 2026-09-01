@@ -160,7 +160,7 @@ def _apply_chord(ir: dict, measures: dict, correction: dict,
     if beat.get("chord") == name:
         return f"이미 {name} 다"
     readable = _readable_chord_names(measure)
-    if readable is not None and name not in readable:
+    if name not in readable:
         # 추출기가 코드 행에서 읽은 이름만 받는다. 프롬프트로만 막으면 모델이
         # 낱글자를 다시 조립해 'Cadd9' 를 'C' 로 끊는 오독을 되풀이한다 —
         # 실측으로 반복된 오류라 관문에서 강제한다.
@@ -190,15 +190,13 @@ def _apply_chord(ir: dict, measures: dict, correction: dict,
     return None
 
 
-def _readable_chord_names(measure: dict) -> set[str] | None:
+def _readable_chord_names(measure: dict) -> set[str]:
     """이 마디에 표기됐거나 앞에서 이어지는 코드명.
 
-    `chord_row` 자체가 없는 IR 은 대조할 근거가 없다는 뜻이라 None 을 돌려
-    검사를 건너뛴다 — 빈 집합으로 두면 모든 코드 보정이 막힌다.
+    `chord_row` 가 없으면 빈 집합이다 — 대조할 근거가 없으면 통과시키지 않는다.
+    "근거 없음" 을 "무엇이든 허용" 으로 읽으면 관문에 fail-open 구멍이 남는다.
     """
-    if "chord_row" not in measure:
-        return None
-    names = {token["name"] for token in measure["chord_row"]}
+    names = {token["name"] for token in measure.get("chord_row", ())}
     if measure.get("chord_in_effect"):
         names.add(measure["chord_in_effect"])
     return names

@@ -513,7 +513,11 @@ def _build_measure(geo, system, bounds, index, tokens, warn,
         # 음도 새 코드로 다시 만들어야 하는데, 여기 아니면 구분할 근거가 없다.
         from_chord = from_slash and not notes
         if from_chord:
-            chord = _chord_at(tokens, beat_x)
+            # 시스템이 슬래시 beat 로 시작하면 그 앞에 코드 토큰이 없다. 넘겨받은
+            # 코드를 쓰지 않으면 그 beat 은 무음이 된다 — 마디 단위 chord_in_effect
+            # 와 같은 근거를 쓴다. 이 악보에서는 매 시스템이 코드를 재표기해
+            # 실제로 걸리지 않지만, 다른 악보에서는 걸린다.
+            chord = _chord_at(tokens, beat_x) or carried_chord
             voicing = chords.voicing_for(chord)
             if chord is None:
                 warn.add(index, "unknown_chord",

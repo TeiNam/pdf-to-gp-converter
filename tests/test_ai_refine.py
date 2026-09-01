@@ -23,12 +23,17 @@ def _beat(notes=(), *, lyric=None, chord=None, stroke=None, techniques=None,
 
 
 def _measure(index, beats, *, chord_row=None, chord_in_effect=None):
-    measure = {"index": index, "time_sig": [4, 4], "kind": "fret",
-               "beats": beats, "glyphs": []}
-    if chord_row is not None or chord_in_effect is not None:
-        measure["chord_row"] = [{"x": 0.0, "name": n} for n in (chord_row or ())]
-        measure["chord_in_effect"] = chord_in_effect
-    return measure
+    """테스트용 마디.
+
+    `chord_row` 기본값은 손으로 검증한 코드 5개다 — corrections 는 코드 행에서
+    읽은 이름만 받으므로, 기본이 비어 있으면 모든 코드 보정 테스트가 그 규칙에
+    먼저 걸려 정작 검사하려던 경로를 지나가지 않는다.
+    """
+    names = sorted(chords.VOICINGS) if chord_row is None else list(chord_row)
+    return {"index": index, "time_sig": [4, 4], "kind": "fret",
+            "beats": beats, "glyphs": [],
+            "chord_row": [{"x": 0.0, "name": name} for name in names],
+            "chord_in_effect": chord_in_effect}
 
 
 def _ir(*measures, **extra):
@@ -283,7 +288,7 @@ def test_chord_carried_over_from_an_earlier_measure_is_accepted():
 
 def test_chord_with_a_voicing_from_the_same_batch_is_accepted():
     """새 코드는 voicing 보정을 같이 내면 순서와 무관하게 통과해야 한다."""
-    ir = _ir(_measure(0, [_beat([(2, 3)])]))
+    ir = _ir(_measure(0, [_beat([(2, 3)])], chord_row=["Bm7"]))
     result, outcome = corrections.apply_corrections(ir, [
         {"op": "chord", "measure": 0, "beat": 0, "name": "Bm7"},
         {"op": "voicing", "name": "Bm7", "frets": [2, 3, 2, 4, 2, -1]}])
@@ -310,7 +315,8 @@ def test_chord_rename_redraws_the_notes_it_derived():
 
 
 def test_chord_rename_is_refused_when_the_new_voicing_is_unknown():
-    ir = _ir(_measure(0, [_beat([(5, 0)], chord="Am", from_chord=True)]))
+    ir = _ir(_measure(0, [_beat([(5, 0)], chord="Am", from_chord=True)],
+                      chord_row=["Am", "Bm7"]))
     result, outcome = corrections.apply_corrections(ir, [
         {"op": "chord", "measure": 0, "beat": 0, "name": "Bm7"}])
 
@@ -356,7 +362,7 @@ def test_chord_name_too_long_for_gp5_is_rejected():
 
 def test_chord_without_a_voicing_is_rejected_because_gp5_shows_nothing():
     """보이싱이 없으면 다이어그램이 안 만들어져 .gp5 에 코드가 아예 안 남는다."""
-    ir = _ir(_measure(0, [_beat([(2, 3)])]))
+    ir = _ir(_measure(0, [_beat([(2, 3)])], chord_row=["Bm7"]))
     _, outcome = corrections.apply_corrections(ir, [
         {"op": "chord", "measure": 0, "beat": 0, "name": "Bm7"}])
 
@@ -428,7 +434,8 @@ def test_new_voicing_fills_a_silent_chord_beat():
 
 def test_voicing_is_applied_before_the_chord_rename_that_needs_it():
     """같은 배치에서 순서가 뒤여도 코드명 보정이 새 보이싱을 쓸 수 있어야 한다."""
-    ir = _ir(_measure(0, [_beat([(5, 0)], chord="Am", from_chord=True)]))
+    ir = _ir(_measure(0, [_beat([(5, 0)], chord="Am", from_chord=True)],
+                      chord_row=["Am", "Bm7"]))
     result, outcome = corrections.apply_corrections(ir, [
         {"op": "chord", "measure": 0, "beat": 0, "name": "Bm7"},
         {"op": "voicing", "name": "Bm7", "frets": [2, 3, 2, 4, 2, -1]}])

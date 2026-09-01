@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 
 import pymupdf
 
-from . import chords, durations, geometry
+from . import chords, durations, geometry, smufl
 
 STANDARD_TUNING = (64, 59, 55, 50, 45, 40)      # 1=고음 E … 6=저음 E
 DEFAULT_TEMPO = 80
@@ -43,10 +43,11 @@ MAX_FRET = 24
 # 실측: 이 PDF 의 별개 음은 6.8pt 이상 떨어져 있어 오탐이 없다
 KERNED_DIGIT_ORIGIN_GAP = 6.0
 
-SMUFL_SLASH_RANGE = (0xE100, 0xE10F)            # SMuFL Slash noteheads
-SMUFL_ARTICULATION_RANGE = (0xE4A0, 0xE4BF)     # 악센트 등 — 반영하지 않고 경고
-SMUFL_TIMESIG_DIGIT_BASE = 0xE080               # E080='0' … E089='9'
-SMUFL_TIMESIG_DIGIT_RANGE = (0xE080, 0xE089)
+# 코드포인트 구획은 SMuFL 표준이라 smufl 모듈이 단독으로 들고 있다
+SMUFL_SLASH_RANGE = smufl.SLASH
+SMUFL_ARTICULATION_RANGE = smufl.ARTICULATION     # 악센트 등 — 반영하지 않고 경고
+SMUFL_TIMESIG_DIGIT_BASE = smufl.TIMESIG_DIGIT[0]  # E080='0' … E089='9'
+SMUFL_TIMESIG_DIGIT_RANGE = smufl.TIMESIG_DIGIT
 # 기타 연주법 약어. 표기는 같은 줄의 두 음 사이에 놓이고, 효과는 앞 음이 갖는다.
 # GP 는 해머온/풀오프를 한 플래그로 다룬다.
 TECHNIQUE_KINDS = {"H": "hammer", "P": "hammer", "S": "slide"}
@@ -57,7 +58,7 @@ TECHNIQUE_ANNOTATION = frozenset(".DU")
 # 영문 가사 악보에는 이 규칙이 통하지 않는다 (이 곡은 한글 가사다).
 LYRIC_MIN_CODEPOINT = 0x1100
 # SMuFL 음악 기호는 유니코드 사설 영역에 있어 위 하한을 그냥 넘는다 — 제외해야 한다
-PRIVATE_USE_RANGE = (0xE000, 0xF8FF)
+PRIVATE_USE_RANGE = smufl.PRIVATE_USE
 # 음절-beat 거리에는 상한을 두지 않는다. 실측 분포가 p50=2.8 / p99=12.3 /
 # 최대 20.3pt 인데 beat 간격도 5.2~30.6pt 로 넓어서, 이상치를 걸러낼 만큼 낮은
 # 상한은 진짜 음절부터 버린다 (12.0 으로 두었을 때 4개 유실). 가사가 아닌 글리프는
@@ -65,7 +66,7 @@ PRIVATE_USE_RANGE = (0xE000, 0xF8FF)
 # 늘임표 — 앞 음절이 다음 음까지 이어진다는 표시. 자기 음 위치를 차지하지만
 # GP5 가사에는 담을 자리가 없어 반영하지 않는다.
 LYRIC_HOLD_MARK = "-"
-SMUFL_REST_RANGE = (0xE4E0, 0xE4FF)             # 타브 대역에 나오면 경고
+SMUFL_REST_RANGE = smufl.REST                   # 타브 대역에 나오면 경고
 SMUFL_STROKE_DOWN = ""
 SMUFL_STROKE_UP = ""
 
@@ -284,13 +285,24 @@ def _techniques(geo, system, x0, x1, fret_glyphs, letter_index) -> list[dict]:
     return result
 
 
+def _is_lyric_syllable(glyph: geometry.Glyph, system: geometry.System) -> bool:
+    """가사 음절인지. 멜로디와 타브 사이 대역의 한글만 인정한다.
+
+    이 대역에는 영문 연주 지시("with 16beat arp play")·마디 번호·H/P/S 표기도
+    놓여 있어 한글 하한으로 가른다. 영문 가사 악보에는 이 규칙이 통하지 않는다.
+    """
+    return (system.melody_ys[-1] < glyph.y < system.tab_ys[0]
+            and ord(glyph.char) >= LYRIC_MIN_CODEPOINT
+            and not _in_range(glyph.char, PRIVATE_USE_RANGE))
+
+
 def _lyric_syllables(geo, system, index, warn) -> list[tuple[float, str]]:
     """멜로디 staff 와 타브 staff 사이의 가사 음절을 (x, 글자) 로 뽑는다."""
     low, high = system.melody_ys[-1], system.tab_ys[0]
     band = [g for g in geo.glyphs if low < g.y < high
             and not _in_range(g.char, PRIVATE_USE_RANGE)]
     syllables = sorted(((g.x, g.char) for g in band
-                        if ord(g.char) >= LYRIC_MIN_CODEPOINT),
+                        if _is_lyric_syllable(g, system)),
                        key=lambda pair: pair[0])
     # 가사가 있는 시스템에서만 센다 — 이 대역에는 'S.D' 같은 연주법 표기도 놓인다
     holds = sum(1 for g in band if g.char == LYRIC_HOLD_MARK)
@@ -330,6 +342,59 @@ def _assign_lyrics(beat_xs: list[float], syllables: list[tuple[float, str]],
                  f"음절 {crowded}개가 앞 음절과 같은 beat 에 묶였다 "
                  f"— 보컬이 기타보다 잔 리듬을 쓴다")
     return assigned
+
+
+def _band_of(glyph: geometry.Glyph, system: geometry.System) -> str | None:
+    """글리프가 놓인 대역. 시스템 밖이면 None.
+
+    `between` 은 멜로디 staff 와 타브 staff 사이다 — 가사와 H/P/S 연주법 표기가
+    이 대역을 공유하므로 이름으로 둘을 구분하지 않는다.
+    """
+    top, bottom = system.melody_ys[0], system.melody_ys[-1]
+    if top - SPAN_SLACK <= glyph.y <= bottom + SPAN_SLACK:
+        return "melody"
+    if top - CHORD_BAND_HEIGHT <= glyph.y < top - SPAN_SLACK:
+        return "chord"
+    if bottom + SPAN_SLACK < glyph.y < system.tab_ys[0]:
+        return "between"
+    if _in_tab_band(glyph, system):
+        return "tab"
+    return None
+
+
+def _nearest_beat(beat_xs: list[float], x: float) -> int | None:
+    if not beat_xs:
+        return None
+    return min(range(len(beat_xs)), key=lambda i: abs(beat_xs[i] - x))
+
+
+def _annotation_glyphs(geo, system, bounds, beat_xs, fret_glyphs) -> list[dict]:
+    """AI 보정에 넘길 주석 글리프. IR 에 이미 들어간 것은 뺀다.
+
+    프렛 숫자와 가사 음절을 걷어내면 남는 것이 곧 "코드가 뜻을 몰라 흘린 것"
+    이다 — 쉼표·아티큘레이션·다이내믹·H/P/S·D.S. al Coda·늘임표가 여기 모인다.
+    코드명·스트로크는 남겨둔다: 코드가 잘못 읽었을 수 있어 AI 가 대조해야 한다.
+    """
+    x0, x1 = bounds
+    claimed = set(fret_glyphs)
+    glyphs = []
+    for glyph in geo.glyphs:
+        if not (x0 <= glyph.x < x1) or glyph in claimed:
+            continue
+        if _is_lyric_syllable(glyph, system):
+            continue
+        band = _band_of(glyph, system)
+        if band is None:
+            continue
+        glyphs.append({
+            "char": glyph.char,
+            "symbol": smufl.label(glyph.char),
+            "band": band,
+            "x": round(glyph.x, 1),
+            "size": glyph.size,
+            "beat": _nearest_beat(beat_xs, glyph.x),
+        })
+    return sorted(glyphs, key=lambda g: g["x"])
 
 
 def _cluster(xs: list[float]) -> list[float]:
@@ -402,8 +467,10 @@ def _build_measure(geo, system, bounds, index, tokens, warn,
     beat_xs = _cluster([g.x for g in fret_glyphs] + slash_xs)
     lyrics = _assign_lyrics(
         beat_xs, [(x, c) for x, c in syllables if x0 <= x < x1], index, warn)
-    measure = {"index": index, "time_sig": list(time_sig),
-               "kind": kind, "beats": []}
+    measure = {
+        "index": index, "time_sig": list(time_sig), "kind": kind, "beats": [],
+        "glyphs": _annotation_glyphs(geo, system, bounds, beat_xs, fret_glyphs),
+    }
     if not beat_xs:
         warn.add(index, "empty_measure", f"판정 {kind}, x {x0:.1f}..{x1:.1f}")
         return measure

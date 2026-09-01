@@ -17,7 +17,7 @@ import shutil
 import subprocess
 import sys
 
-from tab_pdf import build, extract
+from tab_pdf import ai, build, extract, refine
 
 GUITAR_PRO_APP = "Guitar Pro 8"
 # 산출물 기본 폴더 — 입력 pdf/ 와 대칭
@@ -28,7 +28,7 @@ IR_SUFFIX = ".json"
 DEFECT_KINDS = frozenset({
     "duration_mismatch", "empty_measure", "empty_beat",
     "unknown_chord", "unsnapped_digit", "time_signature",
-    "lyric_lost",
+    "lyric_lost", "ai_batch_failed",
 })
 
 
@@ -68,6 +68,30 @@ def _validate(args) -> str | None:
     return None
 
 
+def _show_batch_progress(number: int, total: int, first: int, last: int) -> None:
+    """AI 배치 진행 상황. 임시 출력이라 stderr 로 보낸다."""
+    print(f"  AI 보정 {number}/{total}  마디 {first + 1}..{last + 1}",
+          file=sys.stderr)
+
+
+def _report_refinement(ir: dict) -> None:
+    """AI 보정 내역을 출력한다. 폐기된 제안까지 드러낸다."""
+    refinement = ir.get("refinement")
+    if refinement is None:
+        return
+    applied = collections.Counter(c.get("op", "?") for c in refinement["applied"])
+    print(f"AI     : {refinement['backend']}  "
+          f"배치 {refinement['batches']}개, 제안 {refinement['proposed']}건")
+    print(f"  반영 : {sum(applied.values())}건 {dict(applied)}")
+    if refinement["rejected"]:
+        reasons = collections.Counter(
+            entry["correction"].get("op", "?") for entry in refinement["rejected"])
+        print(f"  폐기 : {len(refinement['rejected'])}건 {dict(reasons)}"
+              " — 검증을 통과하지 못한 제안 (--ir 에 이유가 남는다)")
+    for note in refinement["model_notes"]:
+        print(f"  메모 : {note}")
+
+
 def _report(ir: dict, output: str) -> int:
     """변환 요약을 출력하고 결함성 경고 개수를 돌려준다."""
     beats = sum(len(m["beats"]) for m in ir["measures"])
@@ -78,6 +102,7 @@ def _report(ir: dict, output: str) -> int:
     print(f"마디   : {len(ir['measures'])}  (표기법 {dict(kinds)})")
     print(f"beat   : {beats}   노트: {notes}")
     print(f"저장   : {output}")
+    _report_refinement(ir)
 
     defects = [w for w in ir["warnings"] if w["kind"] in DEFECT_KINDS]
     informational = [w for w in ir["warnings"] if w["kind"] not in DEFECT_KINDS]
@@ -109,7 +134,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--artist", help="아티스트")
     parser.add_argument("--open", action="store_true",
                         dest="open_app", help=f"저장 후 {GUITAR_PRO_APP} 로 열기")
+    parser.add_argument("--ai", action="store_true",
+                        help="1차 변환 결과를 AI 로 보정한다 (.env 설정 필요)")
+    parser.add_argument("--ai-limit", type=int, metavar="N",
+                        help="AI 배치를 앞 N개만 보낸다 (비용 확인용)")
     args = parser.parse_args(argv)
+
+    if args.ai_limit is not None and not args.ai:
+        parser.error("--ai-limit 은 --ai 와 함께 써야 합니다")
+    if args.ai_limit is not None and args.ai_limit < 1:
+        parser.error("--ai-limit 은 1 이상이어야 합니다")
 
     problem = _validate(args)
     if problem:
@@ -122,6 +156,14 @@ def main(argv: list[str] | None = None) -> int:
     except extract.NotATabPdf as exc:
         print(f"오류: {exc}", file=sys.stderr)
         return 2
+
+    if args.ai:
+        try:
+            ir, _ = refine.refine_ir(ir, limit=args.ai_limit,
+                                     on_batch=_show_batch_progress)
+        except ai.AiUnavailable as exc:
+            print(f"오류: AI 보정을 시작할 수 없습니다 — {exc}", file=sys.stderr)
+            return 2
 
     output = args.output or default_output_path(args.pdf)
     os.makedirs(os.path.dirname(os.path.abspath(output)), exist_ok=True)

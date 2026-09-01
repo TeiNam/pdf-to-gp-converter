@@ -5,8 +5,11 @@ description = "PDF 기타 타브 악보 -> Guitar Pro .gp5 변환 CLI"
 requires-python = ">=3.10"
 license = { text = "MIT" }
 dependencies = [
+    "boto3>=1.43.85",
+    "openai>=3.6.0",
     "pyguitarpro>=0.7.0",
     "pymupdf>=1.28.2",
+    "python-dotenv>=1.2.3",
 ]
 
 [dependency-groups]

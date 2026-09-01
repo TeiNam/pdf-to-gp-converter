@@ -2,9 +2,10 @@
 
 import guitarpro as gp
 from guitarpro.models import (
-    Beat, BeatStatus, BeatStrokeDirection, Chord, Duration, GuitarString,
-    LyricLine, Lyrics, Measure, MeasureHeader, Note, NoteType, SlideType,
-    Song, TimeSignature, Track, Voice,
+    Beat, BeatStatus, BeatStrokeDirection, BendEffect, BendPoint, BendType,
+    Chord, Duration, GuitarString, LyricLine, Lyrics, Measure, MeasureHeader,
+    NaturalHarmonic, Note, NoteType, SlideType, Song, TimeSignature, Track,
+    Voice,
 )
 
 from . import chords
@@ -56,19 +57,90 @@ def _lyrics_for(ir: dict) -> Lyrics | None:
     return Lyrics(trackChoice=0, lines=lines)
 
 
+# NoteEffect 의 boolean 플래그로 그대로 떨어지는 연주법.
+# GP 는 해머온과 풀오프를 구분하지 않고 한 플래그로 다룬다.
+_NOTE_FLAGS = {
+    "hammer": "hammer",
+    "vibrato": "vibrato",
+    "palm_mute": "palmMute",
+    "let_ring": "letRing",
+    "staccato": "staccato",
+    "accent": "accentuatedNote",
+    "heavy_accent": "heavyAccentuatedNote",
+    "ghost": "ghostNote",
+}
+_SLIDES = {
+    "slide": SlideType.shiftSlideTo,
+    "slide_out_down": SlideType.outDownwards,
+    "slide_out_up": SlideType.outUpwards,
+    "slide_in_below": SlideType.intoFromBelow,
+    "slide_in_above": SlideType.intoFromAbove,
+}
+# pyguitarpro 모델 단위에서 value 1 = 반음이다 (writer 가 파일 스케일로 곱한다).
+# 벤드 폭은 악보에 안 적혀 있는 경우가 많아 반음을 기본으로 둔다.
+BEND_HALF_STEP = BendEffect.semitoneLength
+_BEND_MID = BendEffect.maxPosition // 2
+
+# corrections 가 통과시키는 연주법은 전부 여기서 GP5 로 떨어져야 한다.
+# 두 집합이 어긋나면 조용히 무시되므로 테스트로 묶어 둔다.
+SUPPORTED_TECHNIQUES = frozenset(_NOTE_FLAGS) | frozenset(_SLIDES) | {
+    "bend", "harmonic", "dead"}
+
+
+def _half_step_bend() -> BendEffect:
+    """올렸다가 유지하는 반음 벤드. position 은 0..maxPosition 의 상대 시간이다."""
+    return BendEffect(
+        type=BendType.bend, value=BEND_HALF_STEP,
+        points=[BendPoint(position=0, value=0),
+                BendPoint(position=_BEND_MID, value=BEND_HALF_STEP),
+                BendPoint(position=BendEffect.maxPosition, value=BEND_HALF_STEP)],
+    )
+
+
+def _apply_technique(note: Note, kind: str) -> bool:
+    """연주법 하나를 노트에 붙인다. GP5 로 옮길 수 없으면 False."""
+    flag = _NOTE_FLAGS.get(kind)
+    if flag is not None:
+        setattr(note.effect, flag, True)
+        return True
+    slide = _SLIDES.get(kind)
+    if slide is not None:
+        if slide not in note.effect.slides:
+            note.effect.slides.append(slide)
+        return True
+    if kind == "bend":
+        note.effect.bend = _half_step_bend()
+        return True
+    if kind == "harmonic":
+        note.effect.harmonic = NaturalHarmonic()
+        return True
+    if kind == "dead":
+        note.type = NoteType.dead
+        return True
+    return False
+
+
 def _apply_techniques(beat: Beat, techniques: list[dict]) -> None:
-    """연주법을 해당 줄의 노트에 붙인다. GP 는 해머온/풀오프를 한 플래그로 다룬다."""
+    """연주법을 해당 줄의 노트에 붙인다."""
     for technique in techniques:
         for note in beat.notes:
-            if note.string != technique["string"]:
-                continue
-            if technique["kind"] == "hammer":
-                note.effect.hammer = True
-            elif technique["kind"] == "slide":
-                note.effect.slides = [SlideType.shiftSlideTo]
+            if note.string == technique["string"]:
+                _apply_technique(note, technique["kind"])
 
 
-def _make_chord_diagram(name: str) -> Chord | None:
+def voicing_for(ir: dict, name: str) -> tuple[tuple[int, int], ...] | None:
+    """손으로 검증한 표가 우선이고, 없으면 AI 가 채운 보이싱을 쓴다."""
+    verified = chords.voicing_for(name)
+    if verified is not None:
+        return verified
+    proposed = ir.get("ai_voicings", {}).get(name.strip())
+    if proposed is None:
+        return None
+    return tuple((string, fret) for string, fret in proposed)
+
+
+def _make_chord_diagram(name: str,
+                        voicing: tuple[tuple[int, int], ...] | None) -> Chord | None:
     """코드명에 다이어그램을 만든다. 보이싱을 모르면 None.
 
     GP5 는 다이어그램을 beat 에 붙인다. 트랙 단위 코드 목록(첫 페이지 상단에 모아
@@ -76,7 +148,6 @@ def _make_chord_diagram(name: str) -> Chord | None:
 
     `Chord.strings` 는 인덱스 0 = 1번줄(고음 E) … 5 = 6번줄이고 미사용은 -1 이다.
     """
-    voicing = chords.voicing_for(name)
     if not voicing:
         return None
     by_string = dict(voicing)
@@ -134,7 +205,8 @@ def build_song(ir: dict) -> Song:
             _apply_techniques(beat, beat_ir.get("techniques", ()))
             chord_name = beat_ir.get("chord")
             if chord_name and chord_name != previous_chord:
-                diagram = _make_chord_diagram(chord_name)
+                diagram = _make_chord_diagram(chord_name,
+                                              voicing_for(ir, chord_name))
                 if diagram is not None:
                     beat.effect.chord = diagram
                 previous_chord = chord_name

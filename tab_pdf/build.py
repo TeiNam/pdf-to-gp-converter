@@ -7,9 +7,8 @@ import guitarpro as gp
 from guitarpro.models import (
     Beat, BeatStatus, BeatStrokeDirection, BendEffect, BendPoint, BendType,
     Chord, DirectionSign, Duration, GraceEffect, GuitarString, KeySignature,
-    LyricLine, Lyrics, Measure, MeasureHeader,
-    NaturalHarmonic, Note, NoteType, SlideType, Song, TimeSignature, Track,
-    Voice,
+    LyricLine, Lyrics, Measure, MeasureHeader, NaturalHarmonic, Note,
+    NoteType, SlideType, Song, TimeSignature, Track, Voice,
 )
 
 from . import chords

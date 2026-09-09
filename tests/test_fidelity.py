@@ -208,7 +208,7 @@ def test_small_digit_becomes_a_grace_note_not_a_beat():
         _glyph(140.0, SYSTEM.tab_ys[2], "3", size=8.0),     # 꾸밈음
         _glyph(150.0, SYSTEM.tab_ys[2], "5"),
     ]
-    measure, warn = _measure_from(glyphs)
+    measure, _ = _measure_from(glyphs)
     assert len(measure["beats"]) == 2, "꾸밈음이 beat 을 만들었다"
     principal = measure["beats"][1]["notes"][0]
     assert principal == {"string": 3, "fret": 5, "grace_fret": 3}

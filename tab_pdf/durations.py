@@ -78,6 +78,18 @@ def _units(quarters: float) -> int:
 PLAIN_LEGAL: tuple[LegalDuration, ...] = tuple(
     legal for legal in LEGAL if legal.tuplet is None)
 
+# 쉼표 글리프 이름 → 아는 길이. 이름이 곧 길이라 x 간격 추정보다 정확하다.
+# 온쉼표(restWhole)는 "마디 전체" 관례가 있어 박자표마다 길이가 달라진다 —
+# 고정하지 않고 x 간격에 맡긴다.
+REST_DURATIONS: dict[str, LegalDuration] = {
+    "restHalf": LegalDuration(2, False, 2.0),
+    "restQuarter": LegalDuration(4, False, 1.0),
+    "rest8th": LegalDuration(8, False, 0.5),
+    "rest16th": LegalDuration(16, False, 0.25),
+    "rest32nd": LegalDuration(32, False, 0.125),
+}
+REST_NAMES = frozenset(REST_DURATIONS) | {"restWhole"}
+
 
 def fit_durations(props: list[float], target: float,
                   pinned: dict[int, LegalDuration] | None = None,

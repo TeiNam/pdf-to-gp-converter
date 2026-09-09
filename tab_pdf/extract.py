@@ -423,21 +423,43 @@ def _is_lyric_syllable(glyph: geometry.Glyph, system: geometry.System) -> bool:
             and not _in_range(glyph.char, PRIVATE_USE_RANGE))
 
 
-def _lyric_syllables(geo, system, index, warn) -> list[tuple[float, str]]:
-    """멜로디 staff 와 타브 staff 사이의 가사 음절을 (x, 글자) 로 뽑는다."""
+LYRIC_ROW_TOLERANCE = 2.0       # 같은 가사 행으로 볼 baseline y 오차 (pt)
+
+
+def _lyric_syllables(geo, system, index, warn
+                     ) -> tuple[list[tuple[float, str]],
+                                list[list[tuple[float, str]]]]:
+    """멜로디 staff 와 타브 staff 사이의 가사 음절을 (1절, [2절 이하]) 로 뽑는다.
+
+    다절 악보는 가사가 위아래 여러 행이다 — x 순으로만 정렬하면 절이
+    글자 단위로 섞인다. baseline y 로 행을 가르고 beat 배정은 첫 행만 받는다.
+    """
     low, high = system.melody_ys[-1], system.tab_ys[0]
     band = [g for g in geo.glyphs if low < g.y < high
             and not _in_range(g.char, PRIVATE_USE_RANGE)]
-    syllables = sorted(((g.x, g.char) for g in band
-                        if _is_lyric_syllable(g, system)),
-                       key=lambda pair: pair[0])
+    lyric_glyphs = sorted((g for g in band if _is_lyric_syllable(g, system)),
+                          key=lambda g: (g.y, g.x))
+    rows: list[list[geometry.Glyph]] = []
+    for glyph in lyric_glyphs:
+        if rows and glyph.y - rows[-1][0].y <= LYRIC_ROW_TOLERANCE:
+            rows[-1].append(glyph)
+        else:
+            rows.append([glyph])
+    as_pairs = [sorted(((g.x, g.char) for g in row), key=lambda pair: pair[0])
+                for row in rows]
+    syllables, extra_rows = (as_pairs[0], as_pairs[1:]) if as_pairs else ([], [])
+    if extra_rows:
+        warn.add(index, "lyric_extra_rows",
+                 f"가사 행이 {len(as_pairs)}개다 — 2절 이하 "
+                 f"{sum(len(row) for row in extra_rows)}음절은 beat 에 배정하지 "
+                 f"않고 GP5 가사 줄 2~5로 넘긴다 (--lyrics row 에서 보인다)")
     # 가사가 있는 시스템에서만 센다 — 이 대역에는 'S.D' 같은 연주법 표기도 놓인다
     holds = sum(1 for g in band if g.char == LYRIC_HOLD_MARK)
     if syllables and holds:
         warn.add(index, "lyric_hold",
                  f"늘임표 {LYRIC_HOLD_MARK!r} {holds}개를 반영하지 못했다 "
                  f"— 앞 음절이 다음 음까지 늘어난다는 표시다")
-    return syllables
+    return syllables, extra_rows
 
 
 def _assign_lyrics(beat_xs: list[float], syllables: list[tuple[float, str]],
@@ -974,6 +996,7 @@ def extract_ir(pdf_path: str, tempo: int | None = None,
     time_sig = DEFAULT_TIME_SIG
     carried_chord: str | None = None
     pending_row_chord: str | None = None
+    extra_lyric_rows: dict[int, list[str]] = {}
     with pymupdf.open(pdf_path) as document:
         for page in document:
             geo = geometry.load_page_geometry(page)
@@ -1005,8 +1028,11 @@ def extract_ir(pdf_path: str, tempo: int | None = None,
                 if not measures:
                     header.update(_header_fields(geo, system))
                 tokens = _chord_tokens(geo, system, all_bounds[-1][1] + 1.0)
-                syllables = _lyric_syllables(
+                syllables, extra_rows = _lyric_syllables(
                     geo, system, len(measures), warn)
+                for row_index, row in enumerate(extra_rows):
+                    extra_lyric_rows.setdefault(row_index, []).extend(
+                        char for _, char in row)
                 for bounds in all_bounds:
                     measure = _build_measure(
                         geo, system, bounds, len(measures), tokens, warn,
@@ -1039,7 +1065,7 @@ def extract_ir(pdf_path: str, tempo: int | None = None,
                  + " — 음원과 맞추려면 --tempo 로 지정할 것")
 
     stem = os.path.splitext(os.path.basename(pdf_path))[0]
-    return {
+    result = {
         "title": title if title is not None else stem,
         "artist": artist if artist is not None else header.get("artist", ""),
         "tempo": tempo or DEFAULT_TEMPO,
@@ -1054,3 +1080,8 @@ def extract_ir(pdf_path: str, tempo: int | None = None,
         "measures": measures,
         "warnings": warn.items,
     }
+    if extra_lyric_rows:
+        result["extra_lyric_rows"] = [
+            " ".join(chars)
+            for _, chars in sorted(extra_lyric_rows.items())]
+    return result

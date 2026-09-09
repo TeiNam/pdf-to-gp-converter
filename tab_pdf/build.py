@@ -91,7 +91,11 @@ def _lyrics_for(ir: dict) -> Lyrics | None:
               for measure in ir["measures"] if measure["index"] >= start
               for beat in measure["beats"]]
     lines = [LyricLine(startingMeasure=start + 1, lyrics=" ".join(tokens))]
-    lines += [LyricLine() for _ in range(LYRIC_LINE_COUNT - 1)]
+    # 2절 이하는 beat 배정 없이 통째로 넘긴다 — GP 가 같은 선율에 분배한다
+    lines += [LyricLine(startingMeasure=start + 1, lyrics=text)
+              for text in ir.get("extra_lyric_rows", ())[:LYRIC_LINE_COUNT - 1]]
+    lines = lines[:LYRIC_LINE_COUNT]
+    lines += [LyricLine() for _ in range(LYRIC_LINE_COUNT - len(lines))]
     return Lyrics(trackChoice=LYRICS_TRACK, lines=lines)
 
 

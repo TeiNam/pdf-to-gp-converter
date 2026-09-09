@@ -86,6 +86,46 @@ def test_real_pdf_x_noteheads_become_dead_notes():
     assert len(dead) == 8
 
 
+# ── #12 다절 가사는 x순으로 섞이면 안 된다 ───────────────────────────────────
+
+def test_second_lyric_row_does_not_interleave_with_first():
+    """1절과 2절이 위아래 두 행이면, beat 배정은 1절만 받는다."""
+    row1_y, row2_y = 140.0, 150.0            # 멜로디(120)~타브(160) 사이 두 행
+    glyphs = [
+        _glyph(60.0, row1_y, "가"), _glyph(150.0, row1_y, "나"),
+        _glyph(60.0, row2_y, "다"), _glyph(150.0, row2_y, "라"),
+    ]
+    geo = geometry.PageGeometry(glyphs=glyphs)
+    warn = extract._Warnings()
+    syllables, extra_rows = extract._lyric_syllables(geo, SYSTEM, 0, warn)
+    assert [char for _, char in syllables] == ["가", "나"], "절이 섞였다"
+    assert [[char for _, char in row] for row in extra_rows] == [["다", "라"]]
+    assert any(w["kind"] == "lyric_extra_rows" for w in warn.items)
+
+
+def test_extra_lyric_rows_land_on_gp5_lyric_lines(tmp_path):
+    ir = {
+        "title": "t", "artist": "", "tempo": 80,
+        "tuning": [64, 59, 55, 50, 45, 40],
+        "extra_lyric_rows": ["다 라"],
+        "measures": [{
+            "index": 0, "time_sig": [4, 4], "kind": "fret", "beats": [
+                {"x": 0, "duration": 2, "dotted": False, "chord": None,
+                 "from_chord": False, "stroke": None, "lyric": "가",
+                 "techniques": [], "notes": [{"string": 3, "fret": 0}]},
+                {"x": 10, "duration": 2, "dotted": False, "chord": None,
+                 "from_chord": False, "stroke": None, "lyric": "나",
+                 "techniques": [], "notes": [{"string": 3, "fret": 0}]},
+            ]}],
+        "warnings": [],
+    }
+    out = tmp_path / "verse.gp5"
+    build.write_gp5(build.build_song(ir), str(out))
+    lyrics = gp.parse(str(out), encoding="cp949").lyrics
+    assert lyrics.lines[0].lyrics == "가 나"
+    assert lyrics.lines[1].lyrics == "다 라", "2절이 GP5 가사 줄로 넘어가지 않았다"
+
+
 # ── #11 시스템·페이지 조용한 스킵 금지 ───────────────────────────────────────
 
 def test_unpairable_staff_group_is_warned(tmp_path):

@@ -8,19 +8,25 @@ from dataclasses import dataclass
 from functools import lru_cache
 
 EPSILON = 1e-9
-# 모든 legal 길이는 0.125 (32분음표) 의 배수다. 정수 단위로 환산해 DP 로 정확히 푼다.
-UNIT_QUARTERS = 0.125
+# 모든 legal 길이는 1/48 (64분음표의 절반 = 셋잇단까지의 공배수) 의 배수다.
+# 정수 단위로 환산해 DP 로 정확히 푼다 — 64분음표 = 3단위, 셋잇단 8분 = 16단위.
+UNIT_QUARTERS = 1.0 / 48.0
 # DP 캐시 크기 — (beat index, 남은 단위) 조합 상한. beat 수십 × 단위 수백이면 충분
 DP_CACHE_SIZE = 100_000
+
+TRIPLET = (3, 2)        # 3개를 2개 자리에 — pyguitarpro Tuplet(enters, times)
 
 
 @dataclass(frozen=True)
 class LegalDuration:
-    value: int          # pyguitarpro Duration.value (1/2/4/8/16/32)
+    value: int          # pyguitarpro Duration.value (1/2/4/8/16/32/64)
     dotted: bool
     quarters: float     # 4분음표 단위 길이
+    tuplet: tuple[int, int] | None = None
 
 
+# 순서가 곧 동률의 승자다 — 비용이 같으면 앞선(평범한) 길이를 고른다.
+# 셋잇단이 정수 리듬을 밀어내지 않게 평범한 길이를 전부 앞에 둔다.
 LEGAL: tuple[LegalDuration, ...] = (
     LegalDuration(1, False, 4.0),
     LegalDuration(2, True, 3.0),
@@ -32,6 +38,12 @@ LEGAL: tuple[LegalDuration, ...] = (
     LegalDuration(16, True, 0.375),
     LegalDuration(16, False, 0.25),
     LegalDuration(32, False, 0.125),
+    LegalDuration(64, False, 0.0625),
+    # 셋잇단 — 4분·8분·16분. 단위 합 제약(mod 3)이 홀로 떨어진 셋잇단을
+    # 걸러내므로 완결된 묶음으로만 해에 들어온다.
+    LegalDuration(4, False, 2.0 / 3.0, TRIPLET),
+    LegalDuration(8, False, 1.0 / 3.0, TRIPLET),
+    LegalDuration(16, False, 1.0 / 6.0, TRIPLET),
 )
 
 
@@ -62,8 +74,14 @@ def _units(quarters: float) -> int:
     return round(quarters / UNIT_QUARTERS)
 
 
+# 잇단음표 표기가 없는 마디용 후보 — 셋잇단 제외
+PLAIN_LEGAL: tuple[LegalDuration, ...] = tuple(
+    legal for legal in LEGAL if legal.tuplet is None)
+
+
 def fit_durations(props: list[float], target: float,
                   pinned: dict[int, LegalDuration] | None = None,
+                  allow_tuplets: bool = False,
                   ) -> tuple[list[LegalDuration], bool]:
     """비례값을 legal 값으로 스냅하되 합이 정확히 target 이 되게 맞춘다.
 
@@ -75,11 +93,16 @@ def fit_durations(props: list[float], target: float,
     `pinned` 는 길이를 이미 아는 beat 이다 (쉼표 글리프는 이름이 곧 길이다).
     그 자리는 후보를 고정하고 나머지만 x 간격으로 맞춘다.
 
+    `allow_tuplets` 는 악보에 잇단음표 숫자가 표기된 마디에서만 켠다 —
+    항상 켜 두면 x 간격이 우연히 3등분에 가까운 평범한 마디에 가짜
+    셋잇단이 유입된다 (실측: 이 악보 m5·m7 이 바뀌었다).
+
     Returns: (스냅 결과, 합이 정확히 맞았는지)
     """
     if not props:
         return [], True
     pins = pinned or {}
+    legal_pool = LEGAL if allow_tuplets else PLAIN_LEGAL
 
     target_units = _units(target)
     if target_units <= 0:
@@ -92,7 +115,7 @@ def fit_durations(props: list[float], target: float,
         if index == len(props):
             return (0.0, ()) if remaining == 0 else None
         best: tuple[float, tuple[LegalDuration, ...]] | None = None
-        candidates = (pins[index],) if index in pins else LEGAL
+        candidates = (pins[index],) if index in pins else legal_pool
         for legal in candidates:
             need = _units(legal.quarters)
             if need > remaining:

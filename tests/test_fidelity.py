@@ -86,6 +86,75 @@ def test_real_pdf_x_noteheads_become_dead_notes():
     assert len(dead) == 8
 
 
+# ── #4 셋잇단 ────────────────────────────────────────────────────────────────
+
+def test_fit_finds_triplets_when_proportions_say_so():
+    from tab_pdf import durations
+
+    third = 1.0 / 3.0
+    fitted, exact = durations.fit_durations(
+        [third, third, third, 1.0, 1.0, 1.0], 4.0, allow_tuplets=True)
+    assert exact
+    assert [(d.value, d.tuplet) for d in fitted[:3]] == [(8, (3, 2))] * 3
+    assert all(d.tuplet is None for d in fitted[3:])
+
+
+def test_plain_rhythm_never_flips_to_triplets():
+    """정수 비례에는 셋잇단이 끼어들면 안 된다 — 동률이면 평범한 쪽."""
+    from tab_pdf import durations
+
+    fitted, exact = durations.fit_durations([0.5] * 8, 4.0, allow_tuplets=True)
+    assert exact
+    assert [d.value for d in fitted] == [8] * 8
+    assert all(d.tuplet is None for d in fitted)
+
+
+TUPLET_3 = chr(0xE883)          # 잇단음표 숫자 '3'
+
+
+def test_triplet_beats_extracted_when_marked():
+    """'3' 표기가 있는 마디에서 1박 3등분이 셋잇단 8분음표로 스냅된다."""
+    xs = [60.0, 90.0, 120.0, 150.0, 240.0, 330.0]
+    glyphs = [_glyph(x, SYSTEM.tab_ys[2], "0") for x in xs]
+    glyphs.append(_glyph(90.0, SYSTEM.tab_ys[5], TUPLET_3))
+    measure, warn = _measure_from(glyphs)
+    got = [(b["duration"], b.get("tuplet")) for b in measure["beats"]]
+    assert got[:3] == [(8, [3, 2])] * 3, got
+    assert got[3:] == [(4, None)] * 3, got
+    assert not any(w["kind"] == "duration_mismatch" for w in warn.items)
+
+
+def test_no_tuplet_marker_means_no_triplets():
+    """표기 없는 마디에는 x 간격이 3등분에 가까워도 셋잇단을 만들지 않는다."""
+    xs = [60.0, 90.0, 120.0, 150.0, 240.0, 330.0]
+    glyphs = [_glyph(x, SYSTEM.tab_ys[2], "0") for x in xs]
+    measure, _ = _measure_from(glyphs)
+    assert all(b.get("tuplet") is None for b in measure["beats"])
+
+
+def test_triplet_reaches_gp5(tmp_path):
+    ir = {
+        "title": "t", "artist": "", "tempo": 80,
+        "tuning": [64, 59, 55, 50, 45, 40],
+        "measures": [{
+            "index": 0, "time_sig": [4, 4], "kind": "fret", "beats": (
+                [{"x": i, "duration": 8, "dotted": False, "tuplet": [3, 2],
+                  "chord": None, "from_chord": False, "stroke": None,
+                  "lyric": None, "techniques": [],
+                  "notes": [{"string": 3, "fret": 0}]} for i in range(3)]
+                + [{"x": 9, "duration": 4, "dotted": False, "chord": None,
+                    "from_chord": False, "stroke": None, "lyric": None,
+                    "techniques": [], "notes": [{"string": 3, "fret": 0}]}] * 3
+            )}],
+        "warnings": [],
+    }
+    out = tmp_path / "trip.gp5"
+    build.write_gp5(build.build_song(ir), str(out))
+    beats = gp.parse(str(out), encoding="cp949").tracks[0].measures[0].voices[0].beats
+    assert (beats[0].duration.tuplet.enters, beats[0].duration.tuplet.times) == (3, 2)
+    assert beats[3].duration.tuplet.enters == 1
+
+
 # ── #19 진행 지시 단어는 코드가 아니다 ───────────────────────────────────────
 
 def test_progression_words_are_not_chords():

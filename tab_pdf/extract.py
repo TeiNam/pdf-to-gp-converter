@@ -865,9 +865,16 @@ def _build_measure(geo, system, bounds, index, tokens, warn,
         warn.add(index, "empty_measure", f"판정 {kind}, x {x0:.1f}..{x1:.1f}")
         return measure
 
+    # 잇단음표 숫자('3')가 표기된 마디에서만 셋잇단 후보를 연다 — 늘 열어두면
+    # x 간격이 우연히 3등분에 가까운 평범한 마디에 가짜 셋잇단이 유입된다
+    allow_tuplets = any(
+        x0 <= g.x < x1 and _in_range(g.char, smufl.TUPLET)
+        and _band_of(g, system) is not None
+        for g in geo.glyphs)
     target = durations.target_quarters(*time_sig)
     fitted, exact = durations.fit_durations(
-        durations.proportions(beat_xs, x1, target), target, pinned=rest_pins)
+        durations.proportions(beat_xs, x1, target), target, pinned=rest_pins,
+        allow_tuplets=allow_tuplets)
     if not exact:
         total = sum(d.quarters for d in fitted)
         warn.add(index, "duration_mismatch",
@@ -878,7 +885,9 @@ def _build_measure(geo, system, bounds, index, tokens, warn,
         if position in rest_positions:
             measure["beats"].append({
                 "x": round(beat_x, 2), "duration": duration.value,
-                "dotted": duration.dotted, "rest": True, "chord": None,
+                "dotted": duration.dotted,
+                "tuplet": list(duration.tuplet) if duration.tuplet else None,
+                "rest": True, "chord": None,
                 "from_chord": False, "stroke": None, "lyric": None,
                 "techniques": [], "notes": [],
             })
@@ -916,6 +925,7 @@ def _build_measure(geo, system, bounds, index, tokens, warn,
             "x": round(beat_x, 2),
             "duration": duration.value,
             "dotted": duration.dotted,
+            "tuplet": list(duration.tuplet) if duration.tuplet else None,
             "chord": chord,
             "from_chord": from_chord,
             "stroke": stroke,
@@ -931,7 +941,8 @@ def _build_measure(geo, system, bounds, index, tokens, warn,
         measure["beats"], tokens, bounds, index, warn,
         pending=pending_row_chord)
     # 경계 마디(픽업·불완전 종지) 재판정에 쓰는 임시 값 — extract_ir 가 걷어낸다
-    measure["_fit"] = {"beat_xs": beat_xs, "x1": x1, "rest_pins": rest_pins}
+    measure["_fit"] = {"beat_xs": beat_xs, "x1": x1, "rest_pins": rest_pins,
+                       "allow_tuplets": allow_tuplets}
     return measure
 
 
@@ -948,12 +959,13 @@ def _refit_measure(measure: dict, numerator: int, denominator: int,
     target = durations.target_quarters(numerator, denominator)
     fitted, exact = durations.fit_durations(
         durations.proportions(fit["beat_xs"], fit["x1"], target), target,
-        pinned=fit["rest_pins"])
+        pinned=fit["rest_pins"], allow_tuplets=fit["allow_tuplets"])
     old = measure["time_sig"]
     measure["time_sig"] = [numerator, denominator]
     for beat, duration in zip(measure["beats"], fitted):
         beat["duration"] = duration.value
         beat["dotted"] = duration.dotted
+        beat["tuplet"] = list(duration.tuplet) if duration.tuplet else None
     warn.add(measure["index"], "pickup_measure",
              f"{old[0]}/{old[1]} 보다 확실히 짧은 경계 마디 — 박자표를 "
              f"{numerator}/{denominator} 로 줄였다 (못갖춘마디로 판단)")

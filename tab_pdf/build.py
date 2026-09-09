@@ -256,10 +256,13 @@ def build_song(ir: dict, *, lyric_mode: str = DEFAULT_LYRIC_MODE) -> Song:
             # 음이 없는 beat(명시적 쉼표, 보이싱 모르는 슬래시)은 GP 표준대로
             # rest 로 쓴다 — normal/0노트는 GP 가 그리지 못하는 비정상 인코딩이다
             is_silent = beat_ir.get("rest") or not beat_ir["notes"]
+            duration = Duration(value=beat_ir["duration"],
+                                isDotted=beat_ir["dotted"])
+            if beat_ir.get("tuplet"):
+                duration.tuplet.enters, duration.tuplet.times = beat_ir["tuplet"]
             beat = Beat(
                 voice,
-                duration=Duration(value=beat_ir["duration"],
-                                  isDotted=beat_ir["dotted"]),
+                duration=duration,
                 status=BeatStatus.rest if is_silent else BeatStatus.normal,
             )
             for note_ir in beat_ir["notes"]:

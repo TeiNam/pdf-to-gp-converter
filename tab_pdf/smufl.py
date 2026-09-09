@@ -30,7 +30,8 @@ STRING_TECHNIQUE = (0xE610, 0xE62F)
 PLUCK = (0xE630, 0xE63F)
 KEYBOARD = (0xE650, 0xE67F)
 GUITAR = (0xE830, 0xE85F)
-ANALYTICS = (0xE860, 0xE88F)
+ANALYTICS = (0xE860, 0xE87F)
+TUPLET = (0xE880, 0xE88F)          # 잇단음표 숫자·콜론
 ARROW = (0xEB60, 0xEB8F)
 PRIVATE_USE = (0xE000, 0xF8FF)
 
@@ -60,6 +61,7 @@ LABELS: tuple[tuple[tuple[int, int], str], ...] = (
     (KEYBOARD, "건반기호"),
     (GUITAR, "기타주법"),
     (ANALYTICS, "분석기호"),
+    (TUPLET, "잇단음표숫자"),
     (ARROW, "화살표"),
 )
 

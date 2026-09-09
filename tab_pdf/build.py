@@ -3,8 +3,8 @@
 import guitarpro as gp
 from guitarpro.models import (
     Beat, BeatStatus, BeatStrokeDirection, BendEffect, BendPoint, BendType,
-    Chord, Duration, GuitarString, KeySignature, LyricLine, Lyrics, Measure,
-    MeasureHeader,
+    Chord, DirectionSign, Duration, GuitarString, KeySignature, LyricLine,
+    Lyrics, Measure, MeasureHeader,
     NaturalHarmonic, Note, NoteType, SlideType, Song, TimeSignature, Track,
     Voice,
 )
@@ -196,6 +196,15 @@ def _make_header(measure_ir: dict, key: KeySignature | None) -> MeasureHeader:
     header.timeSignature = signature
     if key is not None:
         header.keySignature = key
+    # 곡 진행 기호 — 세뇨·코다는 도착점(direction), D.S./To Coda 는 도약점
+    if measure_ir.get("direction"):
+        header.direction = DirectionSign(measure_ir["direction"])
+    if measure_ir.get("from_direction"):
+        header.fromDirection = DirectionSign(measure_ir["from_direction"])
+    if measure_ir.get("repeat_open"):
+        header.isRepeatOpen = True
+    if measure_ir.get("repeat_close"):
+        header.repeatClose = 1          # 반복 횟수 표기가 없으면 한 번 되풀이
     return header
 
 

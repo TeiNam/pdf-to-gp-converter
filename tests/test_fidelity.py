@@ -22,6 +22,9 @@ SYSTEM = geometry.System(
 BOUNDS = (40.0, 400.0)
 
 X_NOTEHEAD = chr(0xE0A9)        # noteheadXBlack — 뮤트 노트
+SEGNO = chr(0xE047)
+CODA = chr(0xE048)
+ORNAMENT_TRILL = chr(0xE566)    # ornamentTrill — 장식음 구획
 
 
 def _glyph(x: float, y: float, char: str, size: float = 9.3) -> geometry.Glyph:
@@ -95,6 +98,114 @@ def test_chord_token_lands_on_fret_beat():
     # 음은 프렛 숫자에서 온 그대로다 — 코드 배정이 음을 갈아치우면 안 된다
     assert measure["beats"][0]["notes"] == [{"string": 3, "fret": 0}]
     assert not measure["beats"][0]["from_chord"]
+
+
+# ── #5 반복·진행 기호가 GP5 direction 으로 옮겨져야 한다 ────────────────────
+
+def _one_beat_glyphs() -> list:
+    return [_glyph(60.0, SYSTEM.tab_ys[2], "0")]
+
+
+def test_segno_glyph_becomes_direction_target():
+    glyphs = _one_beat_glyphs() + [_glyph(45.0, 90.0, SEGNO)]
+    measure, _ = _measure_from(glyphs)
+    assert measure.get("direction") == "Segno"
+
+
+def test_coda_near_measure_start_is_target_near_end_is_jump():
+    at_start, _ = _measure_from(_one_beat_glyphs() + [_glyph(45.0, 90.0, CODA)])
+    assert at_start.get("direction") == "Coda"
+    at_end, _ = _measure_from(_one_beat_glyphs() + [_glyph(390.0, 90.0, CODA)])
+    assert at_end.get("from_direction") == "Da Coda"
+
+
+def test_ds_al_coda_text_becomes_jump():
+    x = 200.0
+    text_glyphs = []
+    for i, char in enumerate("D.S.alCoda"):
+        text_glyphs.append(_glyph(x + i * 6.0, 140.0, char))    # between 대역
+    measure, _ = _measure_from(_one_beat_glyphs() + text_glyphs)
+    assert measure.get("from_direction") == "Da Segno al Coda"
+
+
+def test_directions_reach_gp5_headers(tmp_path):
+    ir = {
+        "title": "t", "artist": "", "tempo": 80,
+        "tuning": [64, 59, 55, 50, 45, 40],
+        "measures": [
+            {"index": 0, "time_sig": [4, 4], "kind": "fret", "direction": "Segno",
+             "beats": [{"x": 0, "duration": 1, "dotted": False, "chord": None,
+                        "from_chord": False, "stroke": None, "lyric": None,
+                        "techniques": [], "notes": [{"string": 3, "fret": 0}]}]},
+            {"index": 1, "time_sig": [4, 4], "kind": "fret",
+             "from_direction": "Da Segno al Coda",
+             "beats": [{"x": 0, "duration": 1, "dotted": False, "chord": None,
+                        "from_chord": False, "stroke": None, "lyric": None,
+                        "techniques": [], "notes": [{"string": 3, "fret": 0}]}]},
+        ],
+        "warnings": [],
+    }
+    out = tmp_path / "dir.gp5"
+    build.write_gp5(build.build_song(ir), str(out))
+    headers = gp.parse(str(out), encoding="cp949").measureHeaders
+    assert headers[0].direction is not None and headers[0].direction.name == "Segno"
+    assert (headers[1].fromDirection is not None
+            and headers[1].fromDirection.name == "Da Segno al Coda")
+
+
+REPEAT_LEFT = chr(0xE040)       # 반복 시작 바라인
+REPEAT_RIGHT = chr(0xE041)      # 반복 끝 바라인
+
+
+def test_repeat_barline_glyphs_become_repeat_flags():
+    opened, _ = _measure_from(_one_beat_glyphs() + [_glyph(42.0, 160.0, REPEAT_LEFT)])
+    assert opened.get("repeat_open") is True
+    closed, _ = _measure_from(_one_beat_glyphs() + [_glyph(395.0, 160.0, REPEAT_RIGHT)])
+    assert closed.get("repeat_close") is True
+
+
+def test_repeat_flags_reach_gp5_headers(tmp_path):
+    beat = {"x": 0, "duration": 1, "dotted": False, "chord": None,
+            "from_chord": False, "stroke": None, "lyric": None,
+            "techniques": [], "notes": [{"string": 3, "fret": 0}]}
+    ir = {
+        "title": "t", "artist": "", "tempo": 80,
+        "tuning": [64, 59, 55, 50, 45, 40],
+        "measures": [
+            {"index": 0, "time_sig": [4, 4], "kind": "fret",
+             "repeat_open": True, "beats": [dict(beat)]},
+            {"index": 1, "time_sig": [4, 4], "kind": "fret",
+             "repeat_close": True, "beats": [dict(beat)]},
+        ],
+        "warnings": [],
+    }
+    out = tmp_path / "rep.gp5"
+    build.write_gp5(build.build_song(ir), str(out))
+    headers = gp.parse(str(out), encoding="cp949").measureHeaders
+    assert headers[0].isRepeatOpen
+    assert headers[1].repeatClose >= 1
+
+
+def test_ornament_in_tab_band_is_warned_not_silent():
+    glyphs = _one_beat_glyphs() + [_glyph(150.0, SYSTEM.tab_ys[2], ORNAMENT_TRILL)]
+    _, warn = _measure_from(glyphs)
+    assert any(w["kind"] == "unsupported_glyph" and "장식음" in w["detail"]
+               for w in warn.items)
+
+
+@needs_pdf
+def test_real_pdf_directions_land_on_their_measures():
+    """실측: m24 세뇨(도착), m30 코다(도약·마디 끝), m48 D.S. al Coda, m49 코다(도착)."""
+    ir = extract.extract_ir(str(PDF), tempo=80)
+    got = {m["index"]: (m.get("direction"), m.get("from_direction"))
+           for m in ir["measures"]
+           if m.get("direction") or m.get("from_direction")}
+    assert got == {
+        24: ("Segno", None),
+        30: (None, "Da Coda"),
+        48: (None, "Da Segno al Coda"),
+        49: ("Coda", None),
+    }
 
 
 @needs_pdf

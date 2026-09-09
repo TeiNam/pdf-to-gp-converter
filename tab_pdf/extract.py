@@ -83,6 +83,23 @@ SMUFL_REST_RANGE = smufl.REST                   # 타브 대역에 나오면 경
 # X 음표머리(noteheadXBlack) — 타브 대역에서는 뮤트 노트다. 프렛 숫자가 없는
 # 자기만의 리듬 이벤트라 beat 으로 세워야 한다 (실측: m23·m48 에 8개)
 X_NOTEHEAD = chr(0xE0A9)
+# 곡 진행 기호. 코다 글리프는 마디 앞쪽이면 도착점(Coda), 뒤쪽이면 도약점
+# (To Coda = GP 의 'Da Coda') 이다 — 실측: 도착 코다는 마디 시작(x비 0.0),
+# 도약 코다는 마지막 beat 뒤(x비 0.9)에 놓인다.
+DIRECTION_TARGET_RATIO = 0.5
+# 진행 지시 텍스트 → GP5 direction 이름. 글리프 스트림에 공백이 없어 붙은
+# 형태로 맞춘다. 순서가 곧 우선순위다 — 'D.S.alFine' 이 'Fine' 보다 먼저다.
+JUMP_TEXTS: tuple[tuple[str, str], ...] = (
+    ("D.S.alCoda", "Da Segno al Coda"),
+    ("D.S.alFine", "Da Segno al Fine"),
+    ("D.C.alCoda", "Da Capo al Coda"),
+    ("D.C.alFine", "Da Capo al Fine"),
+    ("D.S.", "Da Segno"),
+    ("D.C.", "Da Capo"),
+    ("toCoda", "Da Coda"),
+    ("ToCoda", "Da Coda"),
+)
+FINE_TEXT = "Fine"
 SMUFL_STROKE_DOWN = ""
 SMUFL_STROKE_UP = ""
 
@@ -450,22 +467,46 @@ def _classify(fret_glyphs, slash_xs) -> str:
     return "empty"
 
 
+# 타브 대역에서 반영하지 못하는 SMuFL 구획 → 집계 라벨. 멜로디 staff 의 같은
+# 기호(노래 선율의 쉼표·트릴)는 기타 파트가 아니므로 세지 않는다.
+_UNSUPPORTED_TAB_RANGES: tuple[tuple[tuple[int, int], str], ...] = (
+    (smufl.REST, "쉼표"),
+    (smufl.ARTICULATION, "아티큘레이션"),
+    (smufl.ORNAMENT, "장식음"),
+    (smufl.TREMOLO, "트레몰로"),
+)
+
+
 def _warn_unsupported(geo, system, x0, x1, index, warn) -> None:
     """반영하지 못하는 표기를 종류별 1건으로 집계해 남긴다. 조용히 버리지 않는다.
 
     - 타브 대역 쉼표: x간격 기반 음길이를 틀어뜨린다
     - 악센트 등 아티큘레이션: 음정·리듬에는 영향 없지만 표현이 사라진다
+    - 장식음·트레몰로: GP5 로 옮기려면 프렛·박자 인자가 필요해 못 옮긴다
+    - 반복 기호(도트 등)·늘임표: 시스템 어디에 있든 연주 순서·길이에 영향
 
-    H/P/S 연주법은 `_techniques` 가 반영하므로 여기서 세지 않는다.
+    H/P/S 연주법은 `_techniques` 가, segno/coda 는 `_glyph_directions` 가
+    반영하므로 여기서 세지 않는다.
     """
     counts: dict[str, int] = {}
+    handled_directions = {"segno", "coda",
+                          "repeatLeft", "repeatRight", "repeatRightLeft"}
     for glyph in geo.glyphs:
-        if not (x0 <= glyph.x < x1) or not _in_tab_band(glyph, system):
+        if not (x0 <= glyph.x < x1):
             continue
-        if _in_range(glyph.char, SMUFL_REST_RANGE):
-            counts["쉼표"] = counts.get("쉼표", 0) + 1
-        elif _in_range(glyph.char, SMUFL_ARTICULATION_RANGE):
-            counts["아티큘레이션"] = counts.get("아티큘레이션", 0) + 1
+        if _in_tab_band(glyph, system):
+            for bounds_range, label in _UNSUPPORTED_TAB_RANGES:
+                if _in_range(glyph.char, bounds_range):
+                    counts[label] = counts.get(label, 0) + 1
+                    break
+            continue
+        if _band_of(glyph, system) is None:
+            continue                    # 다른 시스템 몫이다
+        if (_in_range(glyph.char, smufl.REPEAT)
+                and smufl.name(glyph.char) not in handled_directions):
+            counts["반복기호"] = counts.get("반복기호", 0) + 1
+        elif _in_range(glyph.char, smufl.HOLD_PAUSE):
+            counts["늘임표·숨표"] = counts.get("늘임표·숨표", 0) + 1
     for label, count in sorted(counts.items()):
         detail = f"{label} {count}개를 반영하지 못했다"
         if label == "쉼표":
@@ -490,6 +531,64 @@ def _beat_notes(fret_glyphs, dead_glyphs, beat_x, system, index, warn) -> list[d
         else:
             notes.append({"string": string, "fret": int(glyph.char)})
     return notes
+
+
+def _glyph_directions(geo, system, bounds) -> tuple[str | None, str | None]:
+    """segno/coda 글리프에서 (도착 direction, 도약 from_direction) 을 읽는다.
+
+    `_band_of` 로 이 시스템의 대역만 본다 — 페이지에 시스템이 4~5개 쌓여
+    있어 x 만으로 거르면 위 시스템의 기호가 아래 시스템 마디에 잡힌다
+    (실측: 세뇨 1개가 3개로 부풀었다).
+    """
+    x0, x1 = bounds
+    direction = from_direction = None
+    for glyph in geo.glyphs:
+        if not (x0 <= glyph.x < x1) or _band_of(glyph, system) is None:
+            continue
+        name = smufl.name(glyph.char)
+        if name == "segno":
+            direction = "Segno"
+        elif name == "coda":
+            ratio = (glyph.x - x0) / max(x1 - x0, 1e-9)
+            if ratio < DIRECTION_TARGET_RATIO:
+                direction = "Coda"
+            else:
+                from_direction = "Da Coda"
+    return direction, from_direction
+
+
+def _repeat_flags(geo, system, bounds) -> tuple[bool, bool]:
+    """반복 바라인 글리프에서 (반복 시작, 반복 끝) 을 읽는다.
+
+    도트가 그려진 원(드로잉)으로만 표기된 반복은 여기서 못 본다 — 그 경우는
+    `_warn_unsupported` 의 반복기호 경고로 드러난다.
+    """
+    x0, x1 = bounds
+    is_open = is_close = False
+    for glyph in geo.glyphs:
+        if not (x0 <= glyph.x < x1) or _band_of(glyph, system) is None:
+            continue
+        name = smufl.name(glyph.char)
+        if name in ("repeatLeft", "repeatRightLeft"):
+            is_open = True
+        if name in ("repeatRight", "repeatRightLeft"):
+            is_close = True
+    return is_open, is_close
+
+
+def _text_directions(glyph_entries: list[dict]) -> tuple[str | None, str | None]:
+    """'D.S. al Coda' 류 진행 지시 텍스트에서 direction 을 읽는다.
+
+    글리프 스트림에는 공백이 없어 이어붙인 문자열로 맞춘다 (실측:
+    'D.S.alCoda'). 'Fine' 은 도약이 아니라 도착점이다.
+    """
+    text = "".join(g["char"] for g in glyph_entries if "char" in g)
+    for pattern, name in JUMP_TEXTS:
+        if pattern in text:
+            return None, name
+    if FINE_TEXT in text:
+        return "Fine", None
+    return None, None
 
 
 def _set_row_chord(beat: dict, name: str, index: int, warn) -> None:
@@ -558,6 +657,17 @@ def _build_measure(geo, system, bounds, index, tokens, warn,
                       if x0 <= x < x1],
         "chord_in_effect": _chord_at(tokens, x0) or carried_chord,
     }
+    direction, from_direction = _glyph_directions(geo, system, bounds)
+    text_direction, text_from = _text_directions(measure["glyphs"])
+    if direction or text_direction:
+        measure["direction"] = direction or text_direction
+    if from_direction or text_from:
+        measure["from_direction"] = from_direction or text_from
+    repeat_open, repeat_close = _repeat_flags(geo, system, bounds)
+    if repeat_open:
+        measure["repeat_open"] = True
+    if repeat_close:
+        measure["repeat_close"] = True
     if not beat_xs:
         warn.add(index, "empty_measure", f"판정 {kind}, x {x0:.1f}..{x1:.1f}")
         return measure

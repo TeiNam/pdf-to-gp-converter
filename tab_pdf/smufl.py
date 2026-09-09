@@ -68,6 +68,10 @@ LABELS: tuple[tuple[tuple[int, int], str], ...] = (
 # 까지만 말해주는데, GP5 로 옮기려면 악센트인지 스타카토인지를 알아야 한다.
 # 실측: 이 악보의 U+E4A1 은 타브 아래 '>' 로 그려지는 악센트다 (렌더해서 확인했다).
 NAMES: dict[int, str] = {
+    0xE040: "repeatLeft",               # 반복 시작 바라인
+    0xE041: "repeatRight",              # 반복 끝 바라인
+    0xE042: "repeatRightLeft",          # 끝나며 곧바로 시작
+    0xE043: "repeatDots",               # 도트만 — 방향을 모른다
     0xE047: "segno",
     0xE048: "coda",
     0xE050: "gClef",

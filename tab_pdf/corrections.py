@@ -58,6 +58,13 @@ MAX_FRET = 24
 UNUSED_STRING = -1
 # 사람 손이 짚을 수 없는 보이싱을 거른다. 하이코드 바레가 4프렛을 쓰므로 여유를 둔다
 MAX_VOICING_SPAN = 6
+# 코드 표기가 beat 에 적용된다고 볼 x 여유 (pt) — extract.CHORD_APPLY_SLACK 과
+# 같은 값이다 (extract 를 import 하면 계층이 뒤집혀 값만 복제한다)
+CHORD_X_SLACK = 5.0
+# 가사 재배치에서 음절 하나가 원래 자리에서 움직일 수 있는 최대 beat 수.
+# 크라우딩 해소는 이웃 beat 으로 한두 칸이면 충분하다 — 상한이 없으면
+# PDF 에 심은 프롬프트 인젝션이 마디의 가사를 전부 한 beat 에 몰 수 있다.
+MAX_LYRIC_SHIFT = 2
 
 
 @dataclass(frozen=True)
@@ -166,6 +173,12 @@ def _apply_chord(ir: dict, measures: dict, correction: dict,
         # 실측으로 반복된 오류라 관문에서 강제한다.
         return (f"{name} 은 이 마디 코드 행에서 읽은 이름이 아니다 "
                 f"(읽은 이름: {sorted(readable) or '없음'})")
+    expected = _expected_chords_at(measure, beat)
+    if name not in expected:
+        # 이름이 코드 행에 있어도 그 beat 위치의 표기가 아니면 거절한다 —
+        # 마디 안 코드끼리 자리를 바꾸는 왜곡(인젝션 포함)을 막는다.
+        return (f"{name} 은 이 beat 위치의 코드가 아니다 "
+                f"(표기상 여기는 {sorted(expected) or '없음'})")
     # 보이싱이 없으면 build 가 다이어그램을 못 만들어 .gp5 에 코드가 아예 안 남는다.
     # IR 에만 남는 이름은 사용자에게 보이지 않으므로 여기서 거절해 경고로 드러낸다.
     voicing = chords.voicing_in(ir, name)
@@ -188,6 +201,23 @@ def _apply_chord(ir: dict, measures: dict, correction: dict,
     beat["chord"] = name
     claimed.add(key)
     return None
+
+
+def _expected_chords_at(measure: dict, beat: dict) -> set[str]:
+    """이 beat 위치에서 유효한 코드 이름.
+
+    표기 x 가 beat 왼쪽(≤ x + slack)인 토큰 중 가장 오른쪽 것(동률 포함).
+    왼쪽 토큰이 하나도 없으면 앞에서 이어지는 `chord_in_effect` 다 —
+    extract 의 `_chord_at` 과 같은 가시성 규칙이다.
+    """
+    visible = [(token["x"], token["name"])
+               for token in measure.get("chord_row", ())
+               if token["x"] <= beat["x"] + CHORD_X_SLACK]
+    if not visible:
+        in_effect = measure.get("chord_in_effect")
+        return {in_effect} if in_effect else set()
+    rightmost = max(x for x, _ in visible)
+    return {name for x, name in visible if x >= rightmost - 1e-6}
 
 
 def _readable_chord_names(measure: dict) -> set[str]:
@@ -331,9 +361,27 @@ def _apply_lyric_group(measure: dict, group: list[dict]) -> str | None:
         return (f"음절이 바뀌었다 — 원본 {before!r} → 제안 {proposed!r}. "
                 f"가사 재배치는 그 마디의 음절을 순서 그대로 다시 나열해야 한다")
 
+    original_positions = _char_positions(
+        (beat.get("lyric") or "") for beat in measure["beats"])
+    proposed_positions = _char_positions(
+        placement.get(position, "") for position in range(len(measure["beats"])))
+    worst = max((abs(a - b) for a, b in
+                 zip(original_positions, proposed_positions)), default=0)
+    if worst > MAX_LYRIC_SHIFT:
+        return (f"음절이 원래 자리에서 {worst} beat 움직인다 — 재배치는 "
+                f"±{MAX_LYRIC_SHIFT} beat 안에서만 받는다 (가사 몰아넣기 방지)")
+
     for beat_index, beat in enumerate(measure["beats"]):
         beat["lyric"] = placement.get(beat_index) or None
     return None
+
+
+def _char_positions(texts) -> list[int]:
+    """beat 순서의 텍스트 나열을 '글자별 beat 인덱스' 목록으로 편다."""
+    positions: list[int] = []
+    for index, text in enumerate(texts):
+        positions.extend(index for _ in text)
+    return positions
 
 
 def _reject(correction: dict, reason: str) -> dict:

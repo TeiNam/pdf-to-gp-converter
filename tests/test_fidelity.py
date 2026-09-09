@@ -86,6 +86,61 @@ def test_real_pdf_x_noteheads_become_dead_notes():
     assert len(dead) == 8
 
 
+# ── #16 프롬프트 인젝션이 관문 안에서 할 수 있는 왜곡을 줄인다 ────────────────
+
+def _corr_beat(x, notes=(), lyric=None, chord=None):
+    return {"x": x, "duration": 8, "dotted": False, "chord": chord,
+            "from_chord": False, "stroke": None, "techniques": [],
+            "lyric": lyric,
+            "notes": [{"string": s, "fret": f} for s, f in notes]}
+
+
+def _corr_ir(measure):
+    return {"title": "t", "artist": "", "tempo": 80,
+            "tuning": [64, 59, 55, 50, 45, 40],
+            "measures": [measure], "warnings": []}
+
+
+def test_chord_correction_cannot_swap_row_positions():
+    """마디 안 표기 코드끼리 자리를 바꾸는 제안은 위치 결속에 걸린다."""
+    from tab_pdf import corrections
+
+    measure = {"index": 0, "time_sig": [4, 4], "kind": "fret",
+               "beats": [_corr_beat(15.0, [(2, 3)]), _corr_beat(205.0, [(2, 5)])],
+               "glyphs": [],
+               "chord_row": [{"x": 10.0, "name": "F"}, {"x": 200.0, "name": "G"}],
+               "chord_in_effect": None}
+    swap = [{"op": "chord", "measure": 0, "beat": 1, "name": "F"}]
+    _, outcome = corrections.apply_corrections(_corr_ir(measure), swap)
+    assert not outcome.applied
+    assert "위치" in outcome.rejected[0]["reason"]
+
+    honest = [{"op": "chord", "measure": 0, "beat": 1, "name": "G"}]
+    _, outcome = corrections.apply_corrections(_corr_ir(measure), honest)
+    assert len(outcome.applied) == 1, outcome.rejected
+
+
+def test_lyric_correction_cannot_pile_syllables_far_away():
+    """음절을 원래 자리에서 2 beat 넘게 옮기는 재배치는 거절된다."""
+    from tab_pdf import corrections
+
+    measure = {"index": 0, "time_sig": [4, 4], "kind": "fret",
+               "beats": [_corr_beat(float(i * 10), [(2, 3)],
+                                    lyric=char)
+                         for i, char in enumerate("가나다라")],
+               "glyphs": [], "chord_row": [], "chord_in_effect": None}
+    pile = [{"op": "lyric", "measure": 0, "beat": 0, "text": "가나다라"}]
+    _, outcome = corrections.apply_corrections(_corr_ir(measure), pile)
+    assert not outcome.applied
+    assert "beat" in outcome.rejected[0]["reason"]
+
+    nudge = [{"op": "lyric", "measure": 0, "beat": 0, "text": "가"},
+             {"op": "lyric", "measure": 0, "beat": 1, "text": "나"},
+             {"op": "lyric", "measure": 0, "beat": 2, "text": "다라"}]
+    _, outcome = corrections.apply_corrections(_corr_ir(measure), nudge)
+    assert len(outcome.applied) == 3, outcome.rejected
+
+
 # ── #4 셋잇단 ────────────────────────────────────────────────────────────────
 
 def test_fit_finds_triplets_when_proportions_say_so():

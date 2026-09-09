@@ -80,6 +80,9 @@ KEY_LABEL = "Key:"
 # 내용으로 판정한다 — 'Slow 16Beat', '16 Beat', 'Shuffle' 따위.
 RHYTHM_WORDS = ("beat", "shuffle", "swing", "slow", "waltz", "ballad", "bounce")
 SMUFL_REST_RANGE = smufl.REST                   # 타브 대역에 나오면 경고
+# X 음표머리(noteheadXBlack) — 타브 대역에서는 뮤트 노트다. 프렛 숫자가 없는
+# 자기만의 리듬 이벤트라 beat 으로 세워야 한다 (실측: m23·m48 에 8개)
+X_NOTEHEAD = chr(0xE0A9)
 SMUFL_STROKE_DOWN = ""
 SMUFL_STROKE_UP = ""
 
@@ -183,6 +186,13 @@ def _warn_kerned_digit_pairs(glyphs, system, index, warn) -> None:
 def _slash_xs(geo, system, x0, x1) -> list[float]:
     return [g.x for g in geo.glyphs
             if x0 <= g.x < x1 and _in_range(g.char, SMUFL_SLASH_RANGE)
+            and _in_tab_band(g, system)]
+
+
+def _dead_glyphs(geo, system, x0, x1) -> list[geometry.Glyph]:
+    """타브 대역의 X 음표머리 — 뮤트 노트 이벤트."""
+    return [g for g in geo.glyphs
+            if x0 <= g.x < x1 and g.char == X_NOTEHEAD
             and _in_tab_band(g, system)]
 
 
@@ -463,18 +473,22 @@ def _warn_unsupported(geo, system, x0, x1, index, warn) -> None:
         warn.add(index, "unsupported_glyph", detail)
 
 
-def _beat_notes(fret_glyphs, beat_x, system, index, warn) -> list[dict]:
+def _beat_notes(fret_glyphs, dead_glyphs, beat_x, system, index, warn) -> list[dict]:
     notes = []
-    for glyph in fret_glyphs:
+    for glyph in fret_glyphs + dead_glyphs:
         if abs(glyph.x - beat_x) > BEAT_CLUSTER_TOLERANCE:
             continue
         string = _snap_to_string(glyph.y, system.tab_ys)
         if string is None:
             warn.add(index, "unsnapped_digit",
-                     f"숫자 {glyph.char!r} at ({glyph.x:.1f}, {glyph.y:.1f}) "
+                     f"글리프 {glyph.char!r} at ({glyph.x:.1f}, {glyph.y:.1f}) "
                      f"가 어느 줄에도 스냅되지 않았다")
             continue
-        notes.append({"string": string, "fret": int(glyph.char)})
+        if glyph.char == X_NOTEHEAD:
+            # 뮤트 노트 — 프렛은 뜻이 없어 0 을 넣고 dead 로 표시한다
+            notes.append({"string": string, "fret": 0, "dead": True})
+        else:
+            notes.append({"string": string, "fret": int(glyph.char)})
     return notes
 
 
@@ -484,18 +498,20 @@ def _build_measure(geo, system, bounds, index, tokens, warn,
                    carried_chord: str | None = None) -> dict:
     x0, x1 = bounds
     fret_glyphs = _fret_glyphs(geo, system, x0, x1, letter_index)
+    dead_glyphs = _dead_glyphs(geo, system, x0, x1)
     slash_xs = _slash_xs(geo, system, x0, x1)
-    kind = _classify(fret_glyphs, slash_xs)
+    kind = _classify(fret_glyphs + dead_glyphs, slash_xs)
     _warn_unsupported(geo, system, x0, x1, index, warn)
     _warn_kerned_digit_pairs(fret_glyphs, system, index, warn)
 
     techniques = _techniques(geo, system, x0, x1, fret_glyphs, letter_index)
-    beat_xs = _cluster([g.x for g in fret_glyphs] + slash_xs)
+    beat_xs = _cluster([g.x for g in fret_glyphs + dead_glyphs] + slash_xs)
     lyrics = _assign_lyrics(
         beat_xs, [(x, c) for x, c in syllables if x0 <= x < x1], index, warn)
     measure = {
         "index": index, "time_sig": list(time_sig), "kind": kind, "beats": [],
-        "glyphs": _annotation_glyphs(geo, system, bounds, beat_xs, fret_glyphs),
+        "glyphs": _annotation_glyphs(geo, system, bounds, beat_xs,
+                                     fret_glyphs + dead_glyphs),
         # 추출기가 코드 행에서 이미 조립해 읽은 이름. AI 가 낱글자를 다시 조립하면
         # 'Cadd9' 를 'C' 로 끊는 오독이 생긴다 — 읽은 결과를 그대로 넘긴다.
         "chord_row": [{"x": round(x, 1), "name": name} for x, name in tokens
@@ -516,7 +532,7 @@ def _build_measure(geo, system, bounds, index, tokens, warn,
                  f"durs={[d.value for d in fitted]}")
 
     for beat_x, duration in zip(beat_xs, fitted):
-        notes = _beat_notes(fret_glyphs, beat_x, system, index, warn)
+        notes = _beat_notes(fret_glyphs, dead_glyphs, beat_x, system, index, warn)
         # 슬래시에서 온 beat 인지 좌표로 판정한다. 노트가 비었다는 이유만으로
         # 코드 보이싱을 채우면, 줄 스냅 실패한 프렛 하나가 추측한 화음으로 증폭된다.
         from_slash = any(abs(slash_x - beat_x) <= BEAT_CLUSTER_TOLERANCE

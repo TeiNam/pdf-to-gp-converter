@@ -89,15 +89,16 @@ def test_ir_totals_match_measured_values():
     kinds = {}
     for measure in ir["measures"]:
         kinds[measure["kind"]] = kinds.get(measure["kind"], 0) + 1
-    # 실측값. 프렛 마디 32 + 슬래시 마디 26. mixed 는 없다 —
-    # 한때 mixed 로 보였던 m32 는 "with 16beat arp play" 주석의 '1','6' 이
-    # 프렛으로 오인된 것이었고, 실제로는 순수 슬래시 마디다.
-    assert kinds == {"fret": 32, "slash": 26}
-    assert sum(len(m["beats"]) for m in ir["measures"]) == 497
+    # 실측값. 프렛 마디 32 + 슬래시 마디 25 + mixed 1 (m48: 슬래시 코드와
+    # X 뮤트 노트헤드가 섞여 있다). 한때 mixed 로 보였던 m32 는 "with 16beat
+    # arp play" 주석의 '1','6' 이 프렛으로 오인된 것이었고 순수 슬래시 마디다.
+    assert kinds == {"fret": 32, "slash": 25, "mixed": 1}
+    # 497 + X 뮤트 beat 8개 (m23 2개, m48 6개)
+    assert sum(len(m["beats"]) for m in ir["measures"]) == 505
     notes = sum(len(b["notes"]) for m in ir["measures"] for b in m["beats"])
     fret_notes = sum(len(b["notes"]) for m in ir["measures"]
                      for b in m["beats"] if not b["chord"])
-    assert (notes, fret_notes) == (1560, 294)
+    assert (notes, fret_notes) == (1568, 302)
 
 
 @needs_pdf
@@ -165,7 +166,7 @@ def test_gp5_roundtrip_preserves_everything(tmp_path):
     ir_notes = sum(len(b["notes"]) for m in ir["measures"] for b in m["beats"])
     gp_notes = sum(len(b.notes)
                    for m in track.measures for v in m.voices for b in v.beats)
-    assert gp_notes == ir_notes == 1560
+    assert gp_notes == ir_notes == 1568        # 1560 + X 뮤트 노트 8개
 
     first = [b for v in track.measures[0].voices for b in v.beats]
     assert [b.duration.value for b in first] == [8] * 8

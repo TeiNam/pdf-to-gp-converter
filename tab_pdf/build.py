@@ -245,7 +245,9 @@ def build_song(ir: dict, *, lyric_mode: str = DEFAULT_LYRIC_MODE) -> Song:
             for note_ir in beat_ir["notes"]:
                 beat.notes.append(Note(
                     beat, value=note_ir["fret"], string=note_ir["string"],
-                    velocity=DEFAULT_VELOCITY, type=NoteType.normal,
+                    velocity=DEFAULT_VELOCITY,
+                    type=(NoteType.dead if note_ir.get("dead")
+                          else NoteType.normal),
                 ))
             _apply_stroke(beat, beat_ir.get("stroke"))
             _apply_techniques(beat, beat_ir.get("techniques", ()))

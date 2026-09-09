@@ -86,6 +86,53 @@ def test_real_pdf_x_noteheads_become_dead_notes():
     assert len(dead) == 8
 
 
+# ── #11 시스템·페이지 조용한 스킵 금지 ───────────────────────────────────────
+
+def test_unpairable_staff_group_is_warned(tmp_path):
+    """5+7선처럼 짝지을 수 없는 staff 는 조용히 사라지면 안 된다."""
+    path = tmp_path / "odd.pdf"
+    doc = pymupdf.open()
+    page = doc.new_page(width=612, height=792)
+    melody = [100.0, 105.0, 110.0, 115.0, 120.0]
+    tab = [160.0, 168.0, 176.0, 184.0, 192.0, 200.0]
+    seven = [400.0 + i * 8.0 for i in range(7)]          # 7선 — 타브가 아니다
+    for y in melody + tab + seven:
+        page.draw_line((40.0, y), (400.0, y), width=0.4)
+    page.draw_line((400.0, melody[0]), (400.0, tab[-1]), width=0.6)
+    for x in (60.0, 150.0, 240.0, 330.0):
+        page.insert_text((x, tab[2]), "0", fontsize=9.3)
+    doc.save(str(path))
+    doc.close()
+
+    ir = extract.extract_ir(str(path), title="odd")
+    assert len(ir["measures"]) == 1
+    skipped = [w for w in ir["warnings"] if w["kind"] == "system_skipped"]
+    assert skipped, "짝지어지지 않은 staff 그룹이 경고 없이 사라졌다"
+
+
+def test_system_without_barlines_is_warned(tmp_path):
+    """마디선이 없는 시스템은 마디를 만들 수 없다 — 경고로 드러나야 한다."""
+    path = tmp_path / "nobar.pdf"
+    doc = pymupdf.open()
+    page = doc.new_page(width=612, height=792)
+    melody = [100.0, 105.0, 110.0, 115.0, 120.0]
+    tab = [160.0, 168.0, 176.0, 184.0, 192.0, 200.0]
+    melody2 = [400.0, 405.0, 410.0, 415.0, 420.0]
+    tab2 = [460.0, 468.0, 476.0, 484.0, 492.0, 500.0]
+    for y in melody + tab + melody2 + tab2:
+        page.draw_line((40.0, y), (400.0, y), width=0.4)
+    page.draw_line((400.0, melody[0]), (400.0, tab[-1]), width=0.6)  # 시스템1만
+    for x in (60.0, 150.0, 240.0, 330.0):
+        page.insert_text((x, tab[2]), "0", fontsize=9.3)
+        page.insert_text((x, tab2[2]), "0", fontsize=9.3)
+    doc.save(str(path))
+    doc.close()
+
+    ir = extract.extract_ir(str(path), title="nobar")
+    skipped = [w for w in ir["warnings"] if w["kind"] == "system_skipped"]
+    assert skipped, "마디선 없는 시스템이 경고 없이 사라졌다"
+
+
 # ── #13 출력 경로 충돌·원자적 쓰기 ───────────────────────────────────────────
 
 def test_cli_refuses_output_over_input_pdf(tmp_path):

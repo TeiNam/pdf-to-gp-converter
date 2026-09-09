@@ -980,9 +980,20 @@ def extract_ir(pdf_path: str, tempo: int | None = None,
             letter_index = build_letter_index(geo)
             if geo.glyphs:
                 saw_text = True
-            for system in geometry.find_systems(geo):
+            systems = geometry.find_systems(geo)
+            # 2줄 이상인 staff 그룹이 시스템으로 묶이지 못하면 그 단은 통째로
+            # 사라진다 — 조용히 넘기지 않는다 (1줄짜리는 제목 밑줄 따위다)
+            stafflike = [len(g) for g in geometry.staff_groups(geo) if len(g) >= 2]
+            if len(stafflike) != 2 * len(systems):
+                warn.add(len(measures), "system_skipped",
+                         f"staff 그룹(선 수 {stafflike}) 중 일부를 5+6선 시스템으로 "
+                         f"묶지 못했다 — 그 단의 마디가 통째로 빠진다")
+            for system in systems:
                 all_bounds = geometry.measure_bounds(geo, system)
                 if not all_bounds:
+                    warn.add(len(measures), "system_skipped",
+                             "시스템을 찾았으나 두 staff 를 관통하는 마디선이 없다 "
+                             "— 이 단을 건너뛴다")
                     continue
                 detected = _detect_time_signature(geo, system)
                 if detected is not None and detected != time_sig:

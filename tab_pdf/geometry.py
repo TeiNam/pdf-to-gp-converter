@@ -102,7 +102,7 @@ def load_page_geometry(page) -> PageGeometry:
     return geo
 
 
-def _staff_groups(geo: PageGeometry) -> list[list[float]]:
+def staff_groups(geo: PageGeometry) -> list[list[float]]:
     ys = sorted({round(h.y, 1) for h in geo.hlines
                  if h.width > MIN_STAFF_LINE_WIDTH})
     if not ys:
@@ -120,7 +120,7 @@ def _staff_groups(geo: PageGeometry) -> list[list[float]]:
 
 def find_systems(geo: PageGeometry) -> list[System]:
     """5선(멜로디) + 6선(타브) 인접쌍을 한 시스템으로 묶는다."""
-    groups = _staff_groups(geo)
+    groups = staff_groups(geo)
     return [System(melody_ys=tuple(a), tab_ys=tuple(b))
             for a, b in zip(groups, groups[1:])
             if len(a) == MELODY_LINE_COUNT and len(b) == TAB_LINE_COUNT]

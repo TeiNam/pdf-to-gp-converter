@@ -28,7 +28,7 @@ IR_SUFFIX = ".json"
 DEFECT_KINDS = frozenset({
     "duration_mismatch", "empty_measure", "empty_beat",
     "unknown_chord", "unsnapped_digit", "time_signature",
-    "lyric_lost", "ai_batch_failed",
+    "lyric_lost", "ai_batch_failed", "system_skipped",
 })
 
 

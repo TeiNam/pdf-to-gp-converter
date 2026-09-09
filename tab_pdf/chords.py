@@ -10,7 +10,9 @@ from dataclasses import dataclass
 
 # 코드명 후보 판정. A~G 로 시작해야 하므로 'H'(해머온)·'2'/'3'(페이지 번호)는 걸러지고,
 # 미등록 코드('Bm7')는 통과해 unknown_chord 경고 경로가 살아난다.
-_CHORD_PATTERN = re.compile(r"^[A-G](?:[#b])?[A-Za-z0-9#b/+()-]*$")
+# 유니코드 임시표(♯♭)도 받는다 — parse() 는 이미 받는데 여기서 거르면
+# 'C♯m' 표기가 코드 행에서 통째로 사라진다.
+_CHORD_PATTERN = re.compile(r"^[A-G](?:[#b♯♭])?[A-Za-z0-9#b♯♭/+()-]*$")
 
 # GP4/5 는 코드명을 22바이트 고정 필드에 쓴다 (pyguitarpro writeByteSizeString(…, 22)).
 # 넘치면 조용히 잘려서 IR 과 .gp5 의 코드명이 달라진다 — 실측으로 30자가 22자로 잘렸다.

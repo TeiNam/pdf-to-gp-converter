@@ -288,32 +288,48 @@ def _rest_glyphs(geo, system, x0, x1) -> list[geometry.Glyph]:
             and _in_tab_band(g, system)]
 
 
+# 코드 행에서 한 행으로 볼 baseline y 오차 (pt). 위첨자 성질('C⁷'의 7)은
+# 루트보다 2~4pt 위에 작게 놓인다 — 같은 행이다. 별개 텍스트 행은 10pt 이상
+# 떨어지므로 붙지 않는다.
+CHORD_ROW_TOLERANCE = 5.0
+
+
 def _chord_tokens(geo, system, x_limit: float) -> list[tuple[float, str]]:
     """이 시스템의 코드 행에서 (x, 코드명) 을 복원한다.
 
-    직전 문자의 잉크 끝(`x_end`) 기준으로 이어붙인다. origin 기준으로는 'Cadd9' 가
-    'C' + 'add9' 로 쪼개진다 (실측 C→a origin 간격 7.68pt, 잉크끝 기준 0.90pt).
+    행(y 클러스터) 안에서 직전 문자의 잉크 끝(`x_end`) 기준으로 이어붙인다.
+    origin 기준으로는 'Cadd9' 가 'C' + 'add9' 로 쪼개진다 (실측 C→a origin
+    간격 7.68pt, 잉크끝 기준 0.90pt). baseline 완전 일치를 요구하면 위첨자
+    성질이 루트에서 떨어져 나가 'C7' 이 'C' 로 읽힌다.
     """
     top = system.melody_ys[0]
-    candidates = sorted(
-        (g for g in geo.glyphs
-         if top - CHORD_BAND_HEIGHT <= g.y < top and g.x < x_limit),
-        key=lambda g: (round(g.y, 1), g.x),
-    )
+    # 음악 기호(사설 영역)는 코드명의 일부가 될 수 없다 — 세뇨·코다가 행
+    # 병합에 끼면 이웃 코드명을 삼켜 토큰 전체가 판정 탈락한다 (실측 3건)
+    band = sorted((g for g in geo.glyphs
+                   if top - CHORD_BAND_HEIGHT <= g.y < top and g.x < x_limit
+                   and not _in_range(g.char, PRIVATE_USE_RANGE)),
+                  key=lambda g: (g.y, g.x))
+    rows: list[list[geometry.Glyph]] = []
+    for glyph in band:
+        if rows and glyph.y - rows[-1][0].y <= CHORD_ROW_TOLERANCE:
+            rows[-1].append(glyph)
+        else:
+            rows.append([glyph])
     tokens: list[tuple[float, str]] = []
-    text, start_x, prev_end, prev_y = "", None, None, None
-    for glyph in candidates:
-        if (prev_end is None or round(glyph.y, 1) != prev_y
-                or glyph.x - prev_end > CHORD_CHAR_GAP):
-            if text:
+    for row in rows:
+        row.sort(key=lambda g: g.x)
+        text, start_x, prev_end = "", 0.0, None
+        for glyph in row:
+            if prev_end is not None and glyph.x - prev_end > CHORD_CHAR_GAP:
                 tokens.append((start_x, text))
-            text, start_x = "", glyph.x
-        text += glyph.char
-        prev_end, prev_y = glyph.x_end, round(glyph.y, 1)
-    if text:
-        tokens.append((start_x, text))
-    # x 오름차순 보장 — _chord_at 이 정렬을 가정하고 break 로 조기 종료한다.
-    # 코드 대역에는 baseline 이 여러 줄 있을 수 있어 (y, x) 순서로는 부족하다.
+                text = ""
+            if not text:
+                start_x = glyph.x
+            text += glyph.char
+            prev_end = glyph.x_end
+        if text:
+            tokens.append((start_x, text))
+    # x 오름차순 보장 — _chord_at 이 정렬을 가정하고 break 로 조기 종료한다
     return sorted(((x, name) for x, name in tokens
                    if chords.looks_like_chord(name)), key=lambda pair: pair[0])
 

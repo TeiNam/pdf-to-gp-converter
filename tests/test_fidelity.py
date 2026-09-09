@@ -86,6 +86,38 @@ def test_real_pdf_x_noteheads_become_dead_notes():
     assert len(dead) == 8
 
 
+# ── #14 코드명 위첨자·유니코드 임시표 ────────────────────────────────────────
+
+def test_unicode_accidental_chord_is_recognized():
+    from tab_pdf import chords
+
+    assert chords.looks_like_chord("C♯m")
+    assert chords.looks_like_chord("B♭7")
+
+
+def test_superscript_quality_joins_its_root():
+    """위첨자 'add9'(작은 크기, 살짝 위 baseline)가 루트와 한 토큰이어야 한다."""
+    glyphs = [_glyph(60.0, 95.0, "C", size=10.0)]
+    for i, char in enumerate("add9"):
+        glyphs.append(geometry.Glyph(
+            x=66.0 + i * 4.0, y=92.0, x_end=66.0 + i * 4.0 + 3.5,
+            char=char, font="f", size=7.0))
+    geo = geometry.PageGeometry(glyphs=glyphs)
+    tokens = extract._chord_tokens(geo, SYSTEM, 400.0)
+    assert tokens == [(60.0, "Cadd9")], f"위첨자가 쪼개졌다: {tokens}"
+
+
+def test_stacked_text_rows_in_chord_band_stay_separate():
+    """코드 대역의 위아래 두 행(10pt 간격)은 한 토큰으로 붙으면 안 된다."""
+    glyphs = [
+        _glyph(60.0, 85.0, "A"), _glyph(65.0, 85.0, "m"),
+        _glyph(60.0, 96.0, "G"),
+    ]
+    geo = geometry.PageGeometry(glyphs=glyphs)
+    tokens = extract._chord_tokens(geo, SYSTEM, 400.0)
+    assert sorted(name for _, name in tokens) == ["Am", "G"]
+
+
 # ── #15 박자표 견고성 ────────────────────────────────────────────────────────
 
 def _timesig_digit(value: int) -> str:

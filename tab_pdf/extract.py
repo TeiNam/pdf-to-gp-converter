@@ -100,6 +100,9 @@ REST_DURATIONS: dict[str, durations.LegalDuration] = {
     "rest32nd": durations.LegalDuration(32, False, 0.125),
 }
 REST_NAMES = frozenset(REST_DURATIONS) | {"restWhole"}
+# 첫·끝 마디의 추정 길이가 박자표의 이 비율 미만이면 못갖춘마디로 본다.
+# 정상 마디의 폭 변동(justification)은 ±15% 안이라 0.75 문턱에 오탐이 없다.
+PICKUP_MAX_RATIO = 0.75
 # X 음표머리(noteheadXBlack) — 타브 대역에서는 뮤트 노트다. 프렛 숫자가 없는
 # 자기만의 리듬 이벤트라 beat 으로 세워야 한다 (실측: m23·m48 에 8개)
 X_NOTEHEAD = chr(0xE0A9)
@@ -822,7 +825,67 @@ def _build_measure(geo, system, bounds, index, tokens, warn,
     measure["pending_row_chord"] = _assign_row_chords(
         measure["beats"], tokens, bounds, index, warn,
         pending=pending_row_chord)
+    # 경계 마디(픽업·불완전 종지) 재판정에 쓰는 임시 값 — extract_ir 가 걷어낸다
+    measure["_fit"] = {"beat_xs": beat_xs, "x1": x1, "rest_pins": rest_pins}
     return measure
+
+
+def _measure_span(measure: dict) -> float:
+    """마디의 음악 구간 폭(pt) — 첫 beat 부터 마디선까지. proportions 와 같은 정의다."""
+    fit = measure["_fit"]
+    return fit["x1"] - fit["beat_xs"][0]
+
+
+def _refit_measure(measure: dict, numerator: int, denominator: int,
+                   warn: _Warnings) -> None:
+    """줄어든 박자표로 beat 길이를 다시 맞춘다."""
+    fit = measure["_fit"]
+    target = durations.target_quarters(numerator, denominator)
+    fitted, exact = durations.fit_durations(
+        durations.proportions(fit["beat_xs"], fit["x1"], target), target,
+        pinned=fit["rest_pins"])
+    old = measure["time_sig"]
+    measure["time_sig"] = [numerator, denominator]
+    for beat, duration in zip(measure["beats"], fitted):
+        beat["duration"] = duration.value
+        beat["dotted"] = duration.dotted
+    warn.add(measure["index"], "pickup_measure",
+             f"{old[0]}/{old[1]} 보다 확실히 짧은 경계 마디 — 박자표를 "
+             f"{numerator}/{denominator} 로 줄였다 (못갖춘마디로 판단)")
+    if not exact:
+        total = sum(d.quarters for d in fitted)
+        warn.add(measure["index"], "duration_mismatch",
+                 f"합 {total:.3f} / 목표 {target:.3f} (픽업 재맞춤)")
+
+
+def _adjust_boundary_measures(measures: list[dict], warn: _Warnings) -> None:
+    """첫·끝 마디가 박자표보다 확실히 짧으면 못갖춘마디로 보고 박자표를 줄인다.
+
+    proportions 는 모든 마디를 박자표 길이로 정규화한다 — 4분음표 하나짜리
+    픽업이 온음표로 늘어난다. 마디 폭이 음길이에 비례한다는 같은 성질을
+    거꾸로 써서, 안쪽 마디들의 pt/4분음표 중앙값으로 경계 마디의 실제
+    길이를 추정한다. 안쪽 마디는 손대지 않는다 — 조판 변동으로 좁아진
+    마디를 오판하면 멀쩡한 마디가 망가진다.
+    """
+    scored = [m for m in measures if m["beats"] and "_fit" in m]
+    if len(scored) < 3:
+        return                      # 스케일을 잴 안쪽 표본이 없다
+    scales = sorted(
+        _measure_span(m) / durations.target_quarters(*m["time_sig"])
+        for m in scored[1:-1] if _measure_span(m) > 0)
+    if not scales:
+        return
+    scale = scales[len(scales) // 2]
+    for measure in (scored[0], scored[-1]):
+        target = durations.target_quarters(*measure["time_sig"])
+        estimated = _measure_span(measure) / scale
+        if estimated >= PICKUP_MAX_RATIO * target:
+            continue
+        denominator = measure["time_sig"][1]
+        numerator = max(1, round(estimated * denominator / 4.0))
+        if numerator >= measure["time_sig"][0]:
+            continue
+        _refit_measure(measure, numerator, denominator, warn)
 
 
 def _header_lines(geo, system) -> list[str]:
@@ -919,6 +982,10 @@ def extract_ir(pdf_path: str, tempo: int | None = None,
             f"{pdf_path}: 텍스트 레이어가 없다. 스캔 이미지 PDF 는 변환할 수 없다")
     if not measures:
         raise NotATabPdf(f"{pdf_path}: 6줄 타브 staff 를 찾지 못했다")
+
+    _adjust_boundary_measures(measures, warn)
+    for measure in measures:
+        measure.pop("_fit", None)
 
     if tempo is None:
         # 이 악보에는 BPM 표기(♩=N·메트로놈 글리프)가 아예 없다. 리듬 지시

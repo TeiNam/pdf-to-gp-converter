@@ -8,6 +8,7 @@
 import pathlib
 
 import guitarpro as gp
+import pymupdf
 import pytest
 
 from tab_pdf import build, extract, geometry
@@ -196,6 +197,57 @@ def test_two_digit_frets_on_different_strings_do_not_merge():
     assert len(measure["beats"]) == 1
     assert sorted((n["string"], n["fret"]) for n in measure["beats"][0]["notes"]) \
         == [(2, 1), (3, 2)]
+
+
+# ── #3 못갖춘마디(픽업)·불완전 마지막 마디 ───────────────────────────────────
+
+def _score_pdf(path, barlines, note_xs, left=40.0):
+    """지정한 마디선·노트 배치로 합성 악보 PDF 를 만든다."""
+    melody_ys = [100.0, 105.0, 110.0, 115.0, 120.0]
+    tab_ys = [160.0, 168.0, 176.0, 184.0, 192.0, 200.0]
+    doc = pymupdf.open()
+    page = doc.new_page(width=612, height=792)
+    for y in melody_ys + tab_ys:
+        page.draw_line((left, y), (barlines[-1], y), width=0.4)
+    for x in barlines:
+        page.draw_line((x, melody_ys[0]), (x, tab_ys[-1]), width=0.6)
+    for x in note_xs:
+        page.insert_text((x, tab_ys[2]), "0", fontsize=9.3)
+    doc.save(str(path))
+    doc.close()
+    return str(path)
+
+
+def test_pickup_measure_gets_a_short_time_signature(tmp_path):
+    """한 음짜리 좁은 첫 마디는 온음표가 아니라 1/4 마디가 되어야 한다."""
+    pdf = _score_pdf(
+        tmp_path / "pickup.pdf",
+        barlines=[120.0, 320.0, 520.0],
+        # m1: 한 음(60) — 폭 80pt. m2·m3: 4분음 4개씩 (gap 50 ≈ 47.5pt/4분)
+        note_xs=[60.0,
+                 130.0, 180.0, 230.0, 280.0,
+                 330.0, 380.0, 430.0, 480.0])
+    ir = extract.extract_ir(pdf, title="pickup")
+    first = ir["measures"][0]
+    assert first["time_sig"] == [1, 4], f"픽업 마디 박자표: {first['time_sig']}"
+    assert [(b["duration"], b["dotted"]) for b in first["beats"]] == [(4, False)]
+    assert any(w["kind"] == "pickup_measure" for w in ir["warnings"])
+    # 가운데·마지막 마디는 4/4 그대로다
+    assert ir["measures"][1]["time_sig"] == [4, 4]
+    assert ir["measures"][2]["time_sig"] == [4, 4]
+
+
+def test_full_first_measure_is_not_mistaken_for_pickup(tmp_path):
+    """정상 폭의 첫 마디를 픽업으로 오판하면 안 된다."""
+    pdf = _score_pdf(
+        tmp_path / "full.pdf",
+        barlines=[240.0, 440.0, 640.0],
+        note_xs=[50.0, 100.0, 150.0, 200.0,
+                 250.0, 300.0, 350.0, 400.0,
+                 450.0, 500.0, 550.0, 600.0])
+    ir = extract.extract_ir(pdf, title="full")
+    assert all(m["time_sig"] == [4, 4] for m in ir["measures"])
+    assert not any(w["kind"] == "pickup_measure" for w in ir["warnings"])
 
 
 # ── #17 아티큘레이션 글리프는 AI 없이도 결정론적으로 매핑되어야 한다 ─────────

@@ -43,6 +43,16 @@ class VLine:
 
 
 @dataclass(frozen=True)
+class Curve:
+    """한 드로잉의 곡선(타이·슬러 호) — 좌측 끝과 우측 끝만 쓴다."""
+
+    x0: float
+    y0: float
+    x1: float
+    y1: float
+
+
+@dataclass(frozen=True)
 class Glyph:
     x: float          # baseline origin x
     y: float          # baseline origin y
@@ -57,6 +67,7 @@ class PageGeometry:
     hlines: list[HLine] = field(default_factory=list)
     vlines: list[VLine] = field(default_factory=list)
     glyphs: list[Glyph] = field(default_factory=list)
+    curves: list[Curve] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -88,6 +99,16 @@ def load_page_geometry(page) -> PageGeometry:
             geo.hlines.append(HLine(y0, min(x0, x1), max(x0, x1)))
         elif abs(x1 - x0) < VERTICAL_TOLERANCE:
             geo.vlines.append(VLine(x0, min(y0, y1), max(y0, y1)))
+
+    # 곡선(타이·슬러 호). 한 호가 베지어 여러 조각이라 드로잉 단위로 모아
+    # 좌우 끝점만 남긴다 — 음악적 해석(타이인지)은 extract 의 몫이다.
+    for drawing in page.get_drawings():
+        points = [point for item in drawing["items"] if item[0] == "c"
+                  for point in (item[1], item[4])]
+        if points:
+            left = min(points, key=lambda p: p.x)
+            right = max(points, key=lambda p: p.x)
+            geo.curves.append(Curve(left.x, left.y, right.x, right.y))
 
     for block in page.get_text("rawdict")["blocks"]:
         for line in block.get("lines", []):

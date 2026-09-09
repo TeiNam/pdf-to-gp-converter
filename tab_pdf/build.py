@@ -6,8 +6,8 @@ import os
 import guitarpro as gp
 from guitarpro.models import (
     Beat, BeatStatus, BeatStrokeDirection, BendEffect, BendPoint, BendType,
-    Chord, DirectionSign, Duration, GuitarString, KeySignature, LyricLine,
-    Lyrics, Measure, MeasureHeader,
+    Chord, DirectionSign, Duration, GraceEffect, GuitarString, KeySignature,
+    LyricLine, Lyrics, Measure, MeasureHeader,
     NaturalHarmonic, Note, NoteType, SlideType, Song, TimeSignature, Track,
     Voice,
 )
@@ -266,12 +266,19 @@ def build_song(ir: dict, *, lyric_mode: str = DEFAULT_LYRIC_MODE) -> Song:
                 status=BeatStatus.rest if is_silent else BeatStatus.normal,
             )
             for note_ir in beat_ir["notes"]:
-                beat.notes.append(Note(
+                if note_ir.get("dead"):
+                    note_type = NoteType.dead
+                elif note_ir.get("tie"):
+                    note_type = NoteType.tie
+                else:
+                    note_type = NoteType.normal
+                note = Note(
                     beat, value=note_ir["fret"], string=note_ir["string"],
-                    velocity=DEFAULT_VELOCITY,
-                    type=(NoteType.dead if note_ir.get("dead")
-                          else NoteType.normal),
-                ))
+                    velocity=DEFAULT_VELOCITY, type=note_type,
+                )
+                if note_ir.get("grace_fret") is not None:
+                    note.effect.grace = GraceEffect(fret=note_ir["grace_fret"])
+                beat.notes.append(note)
             _apply_stroke(beat, beat_ir.get("stroke"))
             _apply_techniques(beat, beat_ir.get("techniques", ()))
             if lyric_mode == "beat":

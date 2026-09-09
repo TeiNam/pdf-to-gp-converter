@@ -14,6 +14,9 @@ DEFAULT_TIME_SIG = (4, 4)
 
 # 프렛 숫자로 인정할 글리프 크기 상한 (pt). 'T','A','B' 세로 라벨은 14.4pt 로 더 크다
 MAX_FRET_GLYPH_SIZE = 11.0
+# 이 크기 이하의 프렛 숫자는 꾸밈음이다 (실측: 정규 9.3pt, 꾸밈음 8.0pt).
+# 정식 beat 으로 세우면 리듬이 왜곡된다 — 다음 음의 grace 로 붙인다.
+GRACE_FRET_GLYPH_SIZE = 8.5
 # 숫자 baseline 이 이 거리 안이면 그 타브 선에 속한다 (선 간격 7.7 의 절반 미만)
 MAX_STRING_SNAP_DISTANCE = 4.0
 # 같은 beat(화음)로 묶을 x 허용 오차 (pt)
@@ -216,10 +219,19 @@ def _has_adjacent_letter(letter_index, glyph: geometry.Glyph) -> bool:
 
 
 def _fret_glyphs(geo, system, x0, x1, letter_index) -> list[geometry.Glyph]:
-    """폰트 이름에 의존하지 않는다 — 숫자 + 타브 대역 + 크기 상한 + 텍스트 배제."""
+    """폰트 이름에 의존하지 않는다 — 숫자 + 타브 대역 + 크기 범위 + 텍스트 배제."""
     return [g for g in geo.glyphs
             if x0 <= g.x < x1 and g.char.isdigit()
-            and g.size <= MAX_FRET_GLYPH_SIZE and _in_tab_band(g, system)
+            and GRACE_FRET_GLYPH_SIZE < g.size <= MAX_FRET_GLYPH_SIZE
+            and _in_tab_band(g, system)
+            and not _has_adjacent_letter(letter_index, g)]
+
+
+def _grace_glyphs(geo, system, x0, x1, letter_index) -> list[geometry.Glyph]:
+    """꾸밈음 프렛 숫자 — 정규보다 작게 조판된다."""
+    return [g for g in geo.glyphs
+            if x0 <= g.x < x1 and g.char.isdigit()
+            and g.size <= GRACE_FRET_GLYPH_SIZE and _in_tab_band(g, system)
             and not _has_adjacent_letter(letter_index, g)]
 
 
@@ -803,10 +815,13 @@ def _build_measure(geo, system, bounds, index, tokens, warn,
                    time_sig: tuple[int, int], letter_index,
                    syllables: list[tuple[float, str]],
                    carried_chord: str | None = None,
-                   pending_row_chord: str | None = None) -> dict:
+                   pending_row_chord: str | None = None,
+                   pending_graces: list | None = None) -> dict:
     x0, x1 = bounds
     fret_glyphs = _merge_two_digit_frets(
         _fret_glyphs(geo, system, x0, x1, letter_index), system, index, warn)
+    grace_glyphs = _merge_two_digit_frets(
+        _grace_glyphs(geo, system, x0, x1, letter_index), system, index, warn)
     dead_glyphs = _dead_glyphs(geo, system, x0, x1)
     rest_glyphs = _rest_glyphs(geo, system, x0, x1)
     slash_xs = _slash_xs(geo, system, x0, x1)
@@ -940,10 +955,77 @@ def _build_measure(geo, system, bounds, index, tokens, warn,
     measure["pending_row_chord"] = _assign_row_chords(
         measure["beats"], tokens, bounds, index, warn,
         pending=pending_row_chord)
+    measure["pending_graces"] = _attach_graces(
+        measure["beats"], grace_glyphs, system, index, warn,
+        pending=pending_graces)
     # 경계 마디(픽업·불완전 종지) 재판정에 쓰는 임시 값 — extract_ir 가 걷어낸다
     measure["_fit"] = {"beat_xs": beat_xs, "x1": x1, "rest_pins": rest_pins,
                        "allow_tuplets": allow_tuplets}
     return measure
+
+
+def _attach_graces(beats: list[dict], grace_glyphs, system, index, warn,
+                   pending: list | None = None) -> list:
+    """꾸밈음을 다음 음(같은 줄)에 붙인다. 못 붙인 것은 다음 마디로 넘긴다.
+
+    GP5 는 노트당 grace 를 하나만 담는다 — 둘 이상이 몰리면 마지막(주음에
+    가장 가까운) 것만 남기고 경고한다.
+    """
+    entries = list(pending or [])
+    for glyph in sorted(grace_glyphs, key=lambda g: g.x):
+        string = _snap_to_string(glyph.y, system.tab_ys)
+        if string is None:
+            warn.add(index, "grace_dropped",
+                     f"꾸밈음 {glyph.char!r} 가 어느 줄에도 스냅되지 않았다")
+            continue
+        entries.append({"x": glyph.x, "string": string, "fret": int(glyph.char)})
+    leftover: list = []
+    for entry in entries:
+        target = next(
+            (note for beat in beats if beat["x"] > entry["x"]
+             for note in beat["notes"] if note["string"] == entry["string"]),
+            None)
+        if target is None:
+            leftover.append({**entry, "x": -1.0})    # 다음 마디 첫 beat 몫
+            continue
+        if target.get("grace_fret") is not None:
+            warn.add(index, "grace_dropped",
+                     f"string{entry['string']} 의 꾸밈음 {target['grace_fret']} 이 "
+                     f"뒤따르는 꾸밈음 {entry['fret']} 에 밀려났다 "
+                     f"— GP5 는 노트당 하나만 담는다")
+        target["grace_fret"] = entry["fret"]
+    return leftover
+
+
+def _apply_tie_curves(geo, system, system_measures: list[dict],
+                      warn: _Warnings) -> None:
+    """타브 대역 곡선 중 같은 (줄, 프렛)을 잇는 것을 타이로 반영한다.
+
+    다른 프렛을 잇는 곡선은 슬러다 — H/P/S 표기가 이미 결정론적으로
+    반영하므로 여기서 손대지 않는다. 시스템(줄바꿈)을 건너는 타이는 두
+    반쪽 호로 그려져 여기서 못 본다.
+    ponytail: 시스템 경계 타이는 미지원 — 필요해지면 시스템 끝/시작 반쪽
+    호를 짝짓는다.
+    """
+    beats = [beat for measure in system_measures for beat in measure["beats"]]
+    if not beats:
+        return
+    low = system.tab_ys[0] - TAB_BAND_MARGIN
+    high = system.tab_ys[-1] + TAB_BAND_MARGIN
+    for curve in geo.curves:
+        if not (low <= curve.y0 <= high and low <= curve.y1 <= high):
+            continue
+        left = min(range(len(beats)), key=lambda i: abs(beats[i]["x"] - curve.x0))
+        right = min(range(len(beats)), key=lambda i: abs(beats[i]["x"] - curve.x1))
+        if right != left + 1:
+            # 타이는 인접한 두 이벤트를 잇는다. 여러 beat 을 덮는 호는
+            # 슬러(해머온·풀오프 묶음)다 — H/P 표기가 이미 반영한다
+            continue
+        shared = ({(n["string"], n["fret"]) for n in beats[left]["notes"]}
+                  & {(n["string"], n["fret"]) for n in beats[right]["notes"]})
+        for note in beats[right]["notes"]:
+            if (note["string"], note["fret"]) in shared:
+                note["tie"] = True
 
 
 def _measure_span(measure: dict) -> float:
@@ -1065,6 +1147,7 @@ def extract_ir(pdf_path: str, tempo: int | None = None,
     time_sig = DEFAULT_TIME_SIG
     carried_chord: str | None = None
     pending_row_chord: str | None = None
+    pending_graces: list = []
     extra_lyric_rows: dict[int, list[str]] = {}
     with pymupdf.open(pdf_path) as document:
         for page in document:
@@ -1081,6 +1164,7 @@ def extract_ir(pdf_path: str, tempo: int | None = None,
                          f"staff 그룹(선 수 {stafflike}) 중 일부를 5+6선 시스템으로 "
                          f"묶지 못했다 — 그 단의 마디가 통째로 빠진다")
             for system in systems:
+                system_first_measure = len(measures)
                 all_bounds = geometry.measure_bounds(geo, system)
                 if not all_bounds:
                     warn.add(len(measures), "system_skipped",
@@ -1112,9 +1196,15 @@ def extract_ir(pdf_path: str, tempo: int | None = None,
                     measure = _build_measure(
                         geo, system, bounds, len(measures), tokens, warn,
                         time_sig, letter_index, syllables, carried_chord,
-                        pending_row_chord)
-                    pending_row_chord = measure.pop("pending_row_chord")
+                        pending_row_chord, pending_graces)
+                    # 빈 마디는 조기 반환이라 pending 키가 없다 — 이월분 유지
+                    pending_row_chord = measure.pop("pending_row_chord",
+                                                    pending_row_chord)
+                    pending_graces = measure.pop("pending_graces",
+                                                 pending_graces)
                     measures.append(measure)
+                _apply_tie_curves(
+                    geo, system, measures[system_first_measure:], warn)
                 # 코드는 줄바꿈을 넘어 유지된다. 시스템마다 tokens 가 새로
                 # 시작하므로, 다음 시스템 첫 마디가 "코드 없음" 이 되지 않게 넘긴다
                 if tokens:

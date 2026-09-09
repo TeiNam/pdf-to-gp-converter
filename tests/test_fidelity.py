@@ -86,6 +86,115 @@ def test_real_pdf_x_noteheads_become_dead_notes():
     assert len(dead) == 8
 
 
+# ── #18 타이·꾸밈음 ──────────────────────────────────────────────────────────
+
+def test_geometry_collects_curves(tmp_path):
+    path = tmp_path / "curve.pdf"
+    doc = pymupdf.open()
+    page = doc.new_page(width=612, height=792)
+    page.draw_bezier((100, 200), (110, 190), (130, 190), (140, 200))
+    doc.save(str(path))
+    doc.close()
+    geo = geometry.load_page_geometry(pymupdf.open(str(path))[0])
+    assert len(geo.curves) == 1
+    curve = geo.curves[0]
+    assert (round(curve.x0), round(curve.x1)) == (100, 140)
+
+
+def test_tie_curve_marks_the_second_note():
+    """같은 (줄, 프렛)을 잇는 곡선은 타이다 — 두 번째 음이 tie 가 된다."""
+    glyphs = [
+        _glyph(60.0, SYSTEM.tab_ys[2], "3"),
+        _glyph(150.0, SYSTEM.tab_ys[2], "3"),
+    ]
+    curves = [geometry.Curve(x0=63.0, y0=178.0, x1=149.0, y1=178.0)]
+    geo = geometry.PageGeometry(glyphs=glyphs, curves=curves)
+    warn = extract._Warnings()
+    measure = extract._build_measure(
+        geo, SYSTEM, BOUNDS, 0, [], warn, (4, 4),
+        extract.build_letter_index(geo), [])
+    extract._apply_tie_curves(geo, SYSTEM, [measure], warn)
+    notes = [n for b in measure["beats"] for n in b["notes"]]
+    assert notes[0].get("tie") is None
+    assert notes[1].get("tie") is True
+
+
+def test_slur_curve_between_different_frets_is_not_a_tie():
+    glyphs = [
+        _glyph(60.0, SYSTEM.tab_ys[2], "3"),
+        _glyph(150.0, SYSTEM.tab_ys[2], "5"),
+    ]
+    curves = [geometry.Curve(x0=63.0, y0=178.0, x1=149.0, y1=178.0)]
+    geo = geometry.PageGeometry(glyphs=glyphs, curves=curves)
+    warn = extract._Warnings()
+    measure = extract._build_measure(
+        geo, SYSTEM, BOUNDS, 0, [], warn, (4, 4),
+        extract.build_letter_index(geo), [])
+    extract._apply_tie_curves(geo, SYSTEM, [measure], warn)
+    assert all(n.get("tie") is None for b in measure["beats"] for n in b["notes"])
+
+
+def test_tie_reaches_gp5(tmp_path):
+    beat = {"x": 0, "duration": 2, "dotted": False, "chord": None,
+            "from_chord": False, "stroke": None, "lyric": None, "techniques": []}
+    ir = {
+        "title": "t", "artist": "", "tempo": 80,
+        "tuning": [64, 59, 55, 50, 45, 40],
+        "measures": [{
+            "index": 0, "time_sig": [4, 4], "kind": "fret", "beats": [
+                dict(beat, notes=[{"string": 3, "fret": 3}]),
+                dict(beat, x=10, notes=[{"string": 3, "fret": 3, "tie": True}]),
+            ]}],
+        "warnings": [],
+    }
+    out = tmp_path / "tie.gp5"
+    build.write_gp5(build.build_song(ir), str(out))
+    beats = gp.parse(str(out), encoding="cp949").tracks[0].measures[0].voices[0].beats
+    assert beats[1].notes[0].type == gp.models.NoteType.tie
+
+
+def test_small_digit_becomes_a_grace_note_not_a_beat():
+    """8pt 소형 숫자는 자기 beat 을 만들지 않고 다음 음의 꾸밈음이 된다."""
+    glyphs = [
+        _glyph(60.0, SYSTEM.tab_ys[2], "0"),
+        _glyph(140.0, SYSTEM.tab_ys[2], "3", size=8.0),     # 꾸밈음
+        _glyph(150.0, SYSTEM.tab_ys[2], "5"),
+    ]
+    measure, warn = _measure_from(glyphs)
+    assert len(measure["beats"]) == 2, "꾸밈음이 beat 을 만들었다"
+    principal = measure["beats"][1]["notes"][0]
+    assert principal == {"string": 3, "fret": 5, "grace_fret": 3}
+
+
+def test_grace_reaches_gp5(tmp_path):
+    ir = {
+        "title": "t", "artist": "", "tempo": 80,
+        "tuning": [64, 59, 55, 50, 45, 40],
+        "measures": [{
+            "index": 0, "time_sig": [4, 4], "kind": "fret", "beats": [
+                {"x": 0, "duration": 1, "dotted": False, "chord": None,
+                 "from_chord": False, "stroke": None, "lyric": None,
+                 "techniques": [],
+                 "notes": [{"string": 3, "fret": 5, "grace_fret": 3}]}]}],
+        "warnings": [],
+    }
+    out = tmp_path / "grace.gp5"
+    build.write_gp5(build.build_song(ir), str(out))
+    note = gp.parse(str(out), encoding="cp949").tracks[0].measures[0].voices[0].beats[0].notes[0]
+    assert note.effect.grace is not None and note.effect.grace.fret == 3
+
+
+@needs_pdf
+def test_real_pdf_grace_notes_attach_to_principals():
+    """실측: 8pt 소형 숫자 6개 — beat 이 아니라 꾸밈음으로 반영된다."""
+    ir = extract.extract_ir(str(PDF), tempo=80)
+    graces = [(m["index"], n["string"], n["grace_fret"], n["fret"])
+              for m in ir["measures"] for b in m["beats"] for n in b["notes"]
+              if n.get("grace_fret") is not None]
+    assert graces, "꾸밈음이 하나도 안 잡혔다"
+    assert all(string in (1, 2) for _, string, _, _ in graces)
+
+
 # ── #16 프롬프트 인젝션이 관문 안에서 할 수 있는 왜곡을 줄인다 ────────────────
 
 def _corr_beat(x, notes=(), lyric=None, chord=None):

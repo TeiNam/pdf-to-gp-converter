@@ -80,3 +80,41 @@ def test_real_pdf_x_noteheads_become_dead_notes():
             for n in b["notes"] if n.get("dead")]
     assert {index for index, _ in dead} == {23, 48}
     assert len(dead) == 8
+
+
+# ── #7 fret 마디에 표기된 코드명도 beat 에 배정되어야 한다 ───────────────────
+
+def test_chord_token_lands_on_fret_beat():
+    """코드 행 토큰이 슬래시 beat 없이도 그 자리 beat 의 chord 가 된다."""
+    glyphs = [
+        _glyph(60.0, SYSTEM.tab_ys[2], "0"),
+        _glyph(150.0, SYSTEM.tab_ys[2], "2"),
+    ]
+    measure, _ = _measure_from(glyphs, tokens=[(58.0, "Am"), (149.0, "G")])
+    assert [b["chord"] for b in measure["beats"]] == ["Am", "G"]
+    # 음은 프렛 숫자에서 온 그대로다 — 코드 배정이 음을 갈아치우면 안 된다
+    assert measure["beats"][0]["notes"] == [{"string": 3, "fret": 0}]
+    assert not measure["beats"][0]["from_chord"]
+
+
+@needs_pdf
+def test_real_pdf_every_chord_token_lands_on_a_beat():
+    """chord_row 토큰은 같은 마디 beat 또는 다음 마디 첫 beat 에 배정된다.
+
+    이 조판은 마디 마지막 코드를 마디선 직전(모든 beat 뒤)에 표기해 다음
+    마디 첫 beat 을 선행 지시한다 — 그 이월까지 포함해 소실이 없어야 한다.
+    """
+    ir = extract.extract_ir(str(PDF), tempo=80)
+    measures = ir["measures"]
+    for i, measure in enumerate(measures):
+        if not measure["chord_row"]:
+            continue
+        names = {token["name"] for token in measure["chord_row"]}
+        carried = {b["chord"] for b in measure["beats"] if b.get("chord")}
+        missing = names - carried
+        if missing:
+            next_first = (measures[i + 1]["beats"][0].get("chord")
+                          if i + 1 < len(measures) and measures[i + 1]["beats"]
+                          else None)
+            assert missing == {next_first}, (
+                f"m{measure['index']} 의 코드 {missing} 가 어디에도 배정되지 않았다")

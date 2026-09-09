@@ -492,10 +492,50 @@ def _beat_notes(fret_glyphs, dead_glyphs, beat_x, system, index, warn) -> list[d
     return notes
 
 
+def _set_row_chord(beat: dict, name: str, index: int, warn) -> None:
+    beat["chord"] = name
+    if chords.voicing_for(name) is None:
+        # 다이어그램은 보이싱이 있어야 만들어진다 — 조용히 사라지지 않게
+        # 남긴다. AI 보정(voicing)이 채우면 build 가 그때 그린다.
+        warn.add(index, "chord_no_voicing",
+                 f"{name} 의 보이싱을 몰라 다이어그램을 만들 수 없다 "
+                 f"— .gp5 에 이 코드 표기가 보이지 않는다")
+
+
+def _assign_row_chords(beats: list[dict], tokens, bounds, index, warn,
+                       pending: str | None = None) -> str | None:
+    """코드 행 토큰을 표기 위치의 beat 에 배정한다. 이월분을 돌려준다.
+
+    슬래시 beat 은 from_chord 경로가 이미 이름을 갖는다. 프렛 beat 은 음은
+    정확한데 코드 표기가 .gp5 에 전혀 남지 않았다 (실측 47개 토큰 소실) —
+    표기 x 이후 첫 미배정 beat 에 이름만 붙인다. 음은 건드리지 않는다.
+
+    이 악보의 조판은 마디 마지막 코드를 모든 beat 보다 뒤(마디선 직전)에
+    표기해 **다음 마디 첫 beat** 을 선행 지시한다 (실측: Cadd9 가 마지막
+    beat 보다 9~12pt 뒤). 그런 토큰은 버리지 않고 다음 마디로 넘긴다.
+    """
+    if pending is not None and beats and beats[0].get("chord") is None:
+        _set_row_chord(beats[0], pending, index, warn)
+    leftover = None
+    x0, x1 = bounds
+    for token_x, name in tokens:
+        if not (x0 <= token_x < x1):
+            continue
+        target = next((b for b in beats
+                       if b["x"] >= token_x - CHORD_APPLY_SLACK
+                       and b.get("chord") is None), None)
+        if target is None:
+            leftover = name         # 마디 끝 선행 표기 — 다음 마디 몫이다
+            continue
+        _set_row_chord(target, name, index, warn)
+    return leftover
+
+
 def _build_measure(geo, system, bounds, index, tokens, warn,
                    time_sig: tuple[int, int], letter_index,
                    syllables: list[tuple[float, str]],
-                   carried_chord: str | None = None) -> dict:
+                   carried_chord: str | None = None,
+                   pending_row_chord: str | None = None) -> dict:
     x0, x1 = bounds
     fret_glyphs = _fret_glyphs(geo, system, x0, x1, letter_index)
     dead_glyphs = _dead_glyphs(geo, system, x0, x1)
@@ -573,6 +613,9 @@ def _build_measure(geo, system, bounds, index, tokens, warn,
             ],
             "notes": notes,
         })
+    measure["pending_row_chord"] = _assign_row_chords(
+        measure["beats"], tokens, bounds, index, warn,
+        pending=pending_row_chord)
     return measure
 
 
@@ -630,6 +673,7 @@ def extract_ir(pdf_path: str, tempo: int | None = None,
 
     time_sig = DEFAULT_TIME_SIG
     carried_chord: str | None = None
+    pending_row_chord: str | None = None
     with pymupdf.open(pdf_path) as document:
         for page in document:
             geo = geometry.load_page_geometry(page)
@@ -653,9 +697,12 @@ def extract_ir(pdf_path: str, tempo: int | None = None,
                 syllables = _lyric_syllables(
                     geo, system, len(measures), warn)
                 for bounds in all_bounds:
-                    measures.append(_build_measure(
+                    measure = _build_measure(
                         geo, system, bounds, len(measures), tokens, warn,
-                        time_sig, letter_index, syllables, carried_chord))
+                        time_sig, letter_index, syllables, carried_chord,
+                        pending_row_chord)
+                    pending_row_chord = measure.pop("pending_row_chord")
+                    measures.append(measure)
                 # 코드는 줄바꿈을 넘어 유지된다. 시스템마다 tokens 가 새로
                 # 시작하므로, 다음 시스템 첫 마디가 "코드 없음" 이 되지 않게 넘긴다
                 if tokens:

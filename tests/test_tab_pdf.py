@@ -96,8 +96,10 @@ def test_ir_totals_match_measured_values():
     # 497 + X 뮤트 beat 8개 (m23 2개, m48 6개)
     assert sum(len(m["beats"]) for m in ir["measures"]) == 505
     notes = sum(len(b["notes"]) for m in ir["measures"] for b in m["beats"])
+    # 코드 보이싱에서 만들어진 음이 아닌, 프렛 숫자·X 헤드에서 직접 읽은 음.
+    # (beat 에 코드명이 붙어도 from_chord 가 아니면 음은 글리프에서 왔다)
     fret_notes = sum(len(b["notes"]) for m in ir["measures"]
-                     for b in m["beats"] if not b["chord"])
+                     for b in m["beats"] if not b.get("from_chord"))
     assert (notes, fret_notes) == (1568, 302)
 
 

@@ -46,6 +46,9 @@ MAX_FRET = 24
 # 두 자리 프렛 의심 구간 — 같은 줄 인접 숫자의 origin 간격 상한 (pt).
 # 실측: 이 PDF 의 별개 음은 6.8pt 이상 떨어져 있어 오탐이 없다
 KERNED_DIGIT_ORIGIN_GAP = 6.0
+# 타이 곡선의 끝점이 beat x 에서 이보다 멀면 음악 호가 아니다 (pt).
+# 배경 삽화의 곡선이 타브 대역을 지나가도 타이로 오인하지 않게 한다
+TIE_ENDPOINT_TOLERANCE = 15.0
 
 # 코드포인트 구획은 SMuFL 표준이라 smufl 모듈이 단독으로 들고 있다
 SMUFL_SLASH_RANGE = smufl.SLASH
@@ -794,14 +797,15 @@ def _assign_row_chords(beats: list[dict], tokens, bounds, index, warn,
     표기해 **다음 마디 첫 beat** 을 선행 지시한다 (실측: Cadd9 가 마지막
     beat 보다 9~12pt 뒤). 그런 토큰은 버리지 않고 다음 마디로 넘긴다.
     """
-    if pending is not None and beats and beats[0].get("chord") is None:
-        _set_row_chord(beats[0], pending, index, warn)
+    sounding = [b for b in beats if not b.get("rest")]
+    if pending is not None and sounding and sounding[0].get("chord") is None:
+        _set_row_chord(sounding[0], pending, index, warn)
     leftover = None
     x0, x1 = bounds
     for token_x, name in tokens:
         if not (x0 <= token_x < x1):
             continue
-        target = next((b for b in beats
+        target = next((b for b in sounding
                        if b["x"] >= token_x - CHORD_APPLY_SLACK
                        and b.get("chord") is None), None)
         if target is None:
@@ -986,7 +990,14 @@ def _attach_graces(beats: list[dict], grace_glyphs, system, index, warn,
              for note in beat["notes"] if note["string"] == entry["string"]),
             None)
         if target is None:
-            leftover.append({**entry, "x": -1.0})    # 다음 마디 첫 beat 몫
+            if entry.get("carried"):
+                # 한 마디를 넘겨도 주음이 없다 — 끝없이 이월하면 엉뚱한
+                # 자리에 붙는다. 버리고 드러낸다.
+                warn.add(index, "grace_dropped",
+                         f"string{entry['string']} 꾸밈음 {entry['fret']} 의 "
+                         f"주음을 찾지 못했다")
+            else:
+                leftover.append({**entry, "x": -1.0, "carried": True})
             continue
         if target.get("grace_fret") is not None:
             warn.add(index, "grace_dropped",
@@ -1021,6 +1032,9 @@ def _apply_tie_curves(geo, system, system_measures: list[dict],
             # 타이는 인접한 두 이벤트를 잇는다. 여러 beat 을 덮는 호는
             # 슬러(해머온·풀오프 묶음)다 — H/P 표기가 이미 반영한다
             continue
+        if (abs(beats[left]["x"] - curve.x0) > TIE_ENDPOINT_TOLERANCE
+                or abs(beats[right]["x"] - curve.x1) > TIE_ENDPOINT_TOLERANCE):
+            continue                    # 끝점이 음표와 무관하다 — 삽화 곡선
         shared = ({(n["string"], n["fret"]) for n in beats[left]["notes"]}
                   & {(n["string"], n["fret"]) for n in beats[right]["notes"]})
         for note in beats[right]["notes"]:

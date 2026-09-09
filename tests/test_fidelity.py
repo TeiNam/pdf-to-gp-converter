@@ -134,6 +134,54 @@ def test_slur_curve_between_different_frets_is_not_a_tie():
     assert all(n.get("tie") is None for b in measure["beats"] for n in b["notes"])
 
 
+def test_far_away_curve_is_not_a_tie():
+    """끝점이 beat 에서 먼 곡선(배경 삽화 등)은 타이가 아니다."""
+    glyphs = [
+        _glyph(200.0, SYSTEM.tab_ys[2], "3"),
+        _glyph(250.0, SYSTEM.tab_ys[2], "3"),
+    ]
+    curves = [geometry.Curve(x0=60.0, y0=178.0, x1=380.0, y1=178.0)]
+    geo = geometry.PageGeometry(glyphs=glyphs, curves=curves)
+    warn = extract._Warnings()
+    measure = extract._build_measure(
+        geo, SYSTEM, BOUNDS, 0, [], warn, (4, 4),
+        extract.build_letter_index(geo), [])
+    extract._apply_tie_curves(geo, SYSTEM, [measure], warn)
+    assert all(n.get("tie") is None for b in measure["beats"] for n in b["notes"])
+
+
+def test_unattachable_grace_is_dropped_with_warning_not_carried_forever():
+    """짝을 못 찾은 꾸밈음은 다음 마디까지만 보고 경고와 함께 버린다."""
+    first = [_glyph(60.0, SYSTEM.tab_ys[4], "3", size=8.0),     # 5번줄 꾸밈음
+             _glyph(100.0, SYSTEM.tab_ys[2], "0")]              # 3번줄 음뿐
+    measure1, warn = _measure_from(first)
+    pending = measure1.pop("pending_graces")
+    assert pending, "꾸밈음이 이월되지 않았다"
+    second = [_glyph(60.0, SYSTEM.tab_ys[2], "0")]              # 여전히 3번줄뿐
+    geo = geometry.PageGeometry(glyphs=second)
+    measure2 = extract._build_measure(
+        geo, SYSTEM, BOUNDS, 1, [], warn, (4, 4),
+        extract.build_letter_index(geo), [], pending_graces=pending)
+    assert measure2.pop("pending_graces") == [], "꾸밈음이 계속 이월된다"
+    assert any(w["kind"] == "grace_dropped" for w in warn.items)
+
+
+def test_pending_row_chord_skips_rest_beat():
+    """이월된 코드는 쉼표가 아니라 첫 소리 나는 beat 에 붙는다."""
+    glyphs = [
+        _glyph(60.0, SYSTEM.tab_ys[3], REST_QUARTER),
+        _glyph(150.0, SYSTEM.tab_ys[2], "0"),
+    ]
+    geo = geometry.PageGeometry(glyphs=glyphs)
+    warn = extract._Warnings()
+    measure = extract._build_measure(
+        geo, SYSTEM, BOUNDS, 0, [], warn, (4, 4),
+        extract.build_letter_index(geo), [], pending_row_chord="Am")
+    rest_beat, sound_beat = measure["beats"]
+    assert rest_beat["chord"] is None
+    assert sound_beat["chord"] == "Am"
+
+
 def test_tie_reaches_gp5(tmp_path):
     beat = {"x": 0, "duration": 2, "dotted": False, "chord": None,
             "from_chord": False, "stroke": None, "lyric": None, "techniques": []}

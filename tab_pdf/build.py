@@ -325,6 +325,11 @@ def write_gp5(song: Song, file_path: str) -> None:
     os.close(handle)
     try:
         gp.write(song, tmp_path, version=GP5_VERSION, encoding=GP5_ENCODING)
+        # mkstemp 는 0600 으로 만든다 — 그대로 두면 산출물이 사용자 전용이
+        # 된다. 일반 파일 생성과 같은 권한(umask 반영)으로 되돌린다.
+        current_umask = os.umask(0)
+        os.umask(current_umask)
+        os.chmod(tmp_path, 0o666 & ~current_umask)
     except BaseException:
         with contextlib.suppress(OSError):
             os.remove(tmp_path)

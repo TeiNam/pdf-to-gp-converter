@@ -85,6 +85,53 @@ def test_real_pdf_x_noteheads_become_dead_notes():
     assert len(dead) == 8
 
 
+# ── #17 아티큘레이션 글리프는 AI 없이도 결정론적으로 매핑되어야 한다 ─────────
+
+ACCENT_BELOW = chr(0xE4A1)      # articAccentBelow
+STACCATO_ABOVE = chr(0xE4A2)    # articStaccatoAbove
+TENUTO_ABOVE = chr(0xE4A4)      # articTenuto — GP5 에 자리가 없어 경고 유지
+
+
+def test_accent_glyph_maps_to_beat_technique():
+    glyphs = _one_beat_glyphs() + [_glyph(61.0, SYSTEM.tab_ys[5], ACCENT_BELOW)]
+    measure, warn = _measure_from(glyphs)
+    assert {"string": None, "kind": "accent"} in measure["beats"][0]["techniques"]
+    assert not any("아티큘레이션" in w["detail"] for w in warn.items), \
+        "매핑된 악센트가 미반영으로도 집계됐다"
+
+
+def test_staccato_glyph_maps_but_tenuto_stays_warned():
+    mapped, _ = _measure_from(
+        _one_beat_glyphs() + [_glyph(61.0, SYSTEM.tab_ys[5], STACCATO_ABOVE)])
+    assert {"string": None, "kind": "staccato"} in mapped["beats"][0]["techniques"]
+    _, warn = _measure_from(
+        _one_beat_glyphs() + [_glyph(61.0, SYSTEM.tab_ys[5], TENUTO_ABOVE)])
+    assert any("아티큘레이션" in w["detail"] for w in warn.items)
+
+
+@needs_pdf
+def test_real_pdf_accents_are_carried_without_ai():
+    """이 악보의 악센트 44개가 --ai 없이 그대로 반영된다."""
+    ir = extract.extract_ir(str(PDF), tempo=80)
+    accents = [t for m in ir["measures"] for b in m["beats"]
+               for t in b["techniques"] if t["kind"] == "accent"]
+    assert len(accents) == 44
+    assert all(t["string"] is None for t in accents), "악센트는 박 전체 표기다"
+
+
+# ── #10 스트로크는 프렛 노트가 있는 beat 에서도 반영되어야 한다 ──────────────
+
+def test_stroke_lands_on_fret_beat_too():
+    """스트럼 화살표가 슬래시 beat 전용이 아니다 — 프렛 코드 위에도 그려진다."""
+    glyphs = [
+        _glyph(60.0, SYSTEM.tab_ys[0], "3"),
+        _glyph(60.0, SYSTEM.tab_ys[1], "0"),
+        _glyph(62.0, SYSTEM.tab_ys[4], extract.SMUFL_STROKE_DOWN),
+    ]
+    measure, _ = _measure_from(glyphs)
+    assert measure["beats"][0]["stroke"] == "down"
+
+
 # ── #7 fret 마디에 표기된 코드명도 beat 에 배정되어야 한다 ───────────────────
 
 def test_chord_token_lands_on_fret_beat():

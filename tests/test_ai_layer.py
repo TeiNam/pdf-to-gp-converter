@@ -55,7 +55,8 @@ def test_extractor_only_produces_technique_kinds_the_builder_knows():
     """1차 추출은 관문을 지나지 않는다 — 여기서 어긋나면 build 가 조용히 버린다."""
     from tab_pdf import extract
 
-    produced = set(extract.TECHNIQUE_GLYPHS.values())
+    produced = (set(extract.TECHNIQUE_GLYPHS.values())
+                | set(extract.ARTICULATION_KINDS.values()))
     assert produced <= build.SUPPORTED_TECHNIQUES, sorted(
         produced - build.SUPPORTED_TECHNIQUES)
 

@@ -53,6 +53,15 @@ SMUFL_TIMESIG_DIGIT_RANGE = smufl.TIMESIG_DIGIT
 # 값은 corrections.TECHNIQUE_KINDS 의 부분집합이어야 한다 — 아니면 build 가
 # 조용히 버린다 (테스트로 묶어 뒀다).
 TECHNIQUE_GLYPHS = {"H": "hammer", "P": "hammer", "S": "slide"}
+# 타브 대역 아티큘레이션 글리프 → 박 전체 연주법. 좌표·정체가 결정론적이라
+# AI 를 거칠 이유가 없다 (실측: 악센트 44개가 --ai 에서만 살아났다).
+# 값은 corrections.BEAT_TECHNIQUES 의 부분집합이어야 한다 — 테스트로 묶어 둔다.
+ARTICULATION_KINDS = {
+    "articAccentAbove": "accent", "articAccentBelow": "accent",
+    "articMarcatoAbove": "heavy_accent", "articMarcatoBelow": "heavy_accent",
+    "articStaccatoAbove": "staccato", "articStaccatoBelow": "staccato",
+    "articStaccatissimoAbove": "staccato", "articStaccatissimoBelow": "staccato",
+}
 # 가사는 멜로디 staff 아래 ~ 타브 staff 위 대역에 놓인다.
 # 이 대역에는 영문 연주 지시("with 16beat arp play")도 있어 한글만 취한다.
 # 영문 가사 악보에는 이 규칙이 통하지 않는다 (이 곡은 한글 가사다).
@@ -325,6 +334,18 @@ def _techniques(geo, system, x0, x1, fret_glyphs, letter_index) -> list[dict]:
     return result
 
 
+def _articulations(geo, system, x0, x1) -> list[tuple[geometry.Glyph, str]]:
+    """타브 대역의 아티큘레이션 글리프 중 GP5 로 옮길 수 있는 것."""
+    result = []
+    for glyph in geo.glyphs:
+        if not (x0 <= glyph.x < x1) or not _in_tab_band(glyph, system):
+            continue
+        kind = ARTICULATION_KINDS.get(smufl.name(glyph.char) or "")
+        if kind is not None:
+            result.append((glyph, kind))
+    return result
+
+
 def _is_lyric_syllable(glyph: geometry.Glyph, system: geometry.System) -> bool:
     """가사 음절인지. 멜로디와 타브 사이 대역의 한글만 인정한다.
 
@@ -495,6 +516,8 @@ def _warn_unsupported(geo, system, x0, x1, index, warn) -> None:
         if not (x0 <= glyph.x < x1):
             continue
         if _in_tab_band(glyph, system):
+            if smufl.name(glyph.char) in ARTICULATION_KINDS:
+                continue                # _articulations 가 반영한다
             for bounds_range, label in _UNSUPPORTED_TAB_RANGES:
                 if _in_range(glyph.char, bounds_range):
                     counts[label] = counts.get(label, 0) + 1
@@ -644,13 +667,21 @@ def _build_measure(geo, system, bounds, index, tokens, warn,
     _warn_kerned_digit_pairs(fret_glyphs, system, index, warn)
 
     techniques = _techniques(geo, system, x0, x1, fret_glyphs, letter_index)
+    articulations = _articulations(geo, system, x0, x1)
     beat_xs = _cluster([g.x for g in fret_glyphs + dead_glyphs] + slash_xs)
+    # 아티큘레이션은 표기 x 가 가장 가까운 beat 의 박 전체에 걸린다
+    beat_articulations: dict[int, list[str]] = {}
+    for art_glyph, art_kind in articulations:
+        position = _nearest_beat(beat_xs, art_glyph.x)
+        if position is not None:
+            beat_articulations.setdefault(position, []).append(art_kind)
     lyrics = _assign_lyrics(
         beat_xs, [(x, c) for x, c in syllables if x0 <= x < x1], index, warn)
     measure = {
         "index": index, "time_sig": list(time_sig), "kind": kind, "beats": [],
-        "glyphs": _annotation_glyphs(geo, system, bounds, beat_xs,
-                                     fret_glyphs + dead_glyphs),
+        "glyphs": _annotation_glyphs(
+            geo, system, bounds, beat_xs,
+            fret_glyphs + dead_glyphs + [glyph for glyph, _ in articulations]),
         # 추출기가 코드 행에서 이미 조립해 읽은 이름. AI 가 낱글자를 다시 조립하면
         # 'Cadd9' 를 'C' 로 끊는 오독이 생긴다 — 읽은 결과를 그대로 넘긴다.
         "chord_row": [{"x": round(x, 1), "name": name} for x, name in tokens
@@ -681,13 +712,16 @@ def _build_measure(geo, system, bounds, index, tokens, warn,
                  f"합 {total:.3f} / 목표 {target:.3f}, "
                  f"durs={[d.value for d in fitted]}")
 
-    for beat_x, duration in zip(beat_xs, fitted):
+    for position, (beat_x, duration) in enumerate(zip(beat_xs, fitted)):
         notes = _beat_notes(fret_glyphs, dead_glyphs, beat_x, system, index, warn)
         # 슬래시에서 온 beat 인지 좌표로 판정한다. 노트가 비었다는 이유만으로
         # 코드 보이싱을 채우면, 줄 스냅 실패한 프렛 하나가 추측한 화음으로 증폭된다.
         from_slash = any(abs(slash_x - beat_x) <= BEAT_CLUSTER_TOLERANCE
                          for slash_x in slash_xs)
-        chord = stroke = None
+        chord = None
+        # 스트로크는 슬래시 beat 전용이 아니다 — 프렛 코드 위 스트럼 화살표도
+        # 같은 기호다 (from_chord 안에서만 찾으면 조용히 사라진다)
+        stroke = _stroke_at(geo, system, beat_x)
         # 음이 코드명에서 만들어졌는지 기록한다. 나중에 AI 가 코드명을 고치면
         # 음도 새 코드로 다시 만들어야 하는데, 여기 아니면 구분할 근거가 없다.
         from_chord = from_slash and not notes
@@ -704,7 +738,6 @@ def _build_measure(geo, system, bounds, index, tokens, warn,
             elif voicing is None:
                 warn.add(index, "unknown_chord", f"{chord} — VOICINGS 에 없음")
             notes = [{"string": s, "fret": f} for s, f in (voicing or ())]
-            stroke = _stroke_at(geo, system, beat_x)
         elif not notes:
             warn.add(index, "empty_beat",
                      f"x={beat_x:.1f} 에 프렛 숫자가 있었으나 노트가 만들어지지 않았다")
@@ -720,7 +753,8 @@ def _build_measure(geo, system, bounds, index, tokens, warn,
             "techniques": [
                 {"string": t["string"], "kind": t["kind"]} for t in techniques
                 if abs(t["x"] - beat_x) <= BEAT_CLUSTER_TOLERANCE
-            ],
+            ] + [{"string": None, "kind": kind}
+                 for kind in beat_articulations.get(position, ())],
             "notes": notes,
         })
     measure["pending_row_chord"] = _assign_row_chords(

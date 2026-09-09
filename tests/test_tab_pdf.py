@@ -117,9 +117,10 @@ def test_ir_every_measure_sums_to_its_time_signature():
                "unknown_chord", "unsnapped_digit", "time_signature"}
     defects = [w for w in ir["warnings"] if w["kind"] in DEFECTS]
     assert defects == [], f"결함성 경고가 남았다: {defects[:5]}"
-    # 반영하지 못한 표기는 반드시 드러나야 한다 (조용한 손실 방지)
-    unsupported = [w for w in ir["warnings"] if w["kind"] == "unsupported_glyph"]
-    assert unsupported, "미반영 표기가 경고로 남지 않았다"
+    # 한때 아티큘레이션 44개가 미반영 경고로 남았지만 지금은 결정론적으로
+    # 매핑된다 — 매핑된 종류가 미반영으로 되돌아오면 표류다
+    assert not [w for w in ir["warnings"] if w["kind"] == "unsupported_glyph"
+                and "아티큘레이션" in w["detail"]]
 
 
 @needs_pdf
@@ -251,9 +252,10 @@ def test_techniques_land_on_the_right_string(tmp_path):
     from tab_pdf import build, extract
 
     ir = extract.extract_ir(str(PDF))
+    # 박 전체 아티큘레이션(string None)은 별개 경로다 — H/P/S 만 본다
     techniques = [(m["index"], t)
                   for m in ir["measures"] for b in m["beats"]
-                  for t in b.get("techniques", ())]
+                  for t in b.get("techniques", ()) if t["string"] is not None]
     assert len(techniques) == 6, f"연주법 {len(techniques)}개"
     assert all(t["string"] == 2 for _, t in techniques), "전부 2번줄이어야 한다"
     kinds = sorted(t["kind"] for _, t in techniques)
@@ -383,10 +385,13 @@ def test_chord_derived_beats_carry_no_extractor_techniques():
     from tab_pdf import extract
 
     ir = extract.extract_ir(str(PDF))
+    # 박 전체 표기(string None)는 음이 바뀌어도 고아가 되지 않는다 —
+    # 줄을 특정한 연주법만 위험하다
     offenders = [(m["index"], i) for m in ir["measures"]
                  for i, b in enumerate(m["beats"])
-                 if b["from_chord"] and b["techniques"]]
-    assert not offenders, f"from_chord beat 에 연주법이 있다: {offenders[:5]}"
+                 if b["from_chord"]
+                 and any(t["string"] is not None for t in b["techniques"])]
+    assert not offenders, f"from_chord beat 에 줄 연주법이 있다: {offenders[:5]}"
 
 
 @needs_pdf

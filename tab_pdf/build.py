@@ -2,12 +2,14 @@
 
 import contextlib
 import os
+import re
 import tempfile
 
 import guitarpro as gp
 from guitarpro.models import (
     Beat, BeatStatus, BeatStrokeDirection, BendEffect, BendPoint, BendType,
-    Chord, DirectionSign, Duration, GraceEffect, GuitarString, KeySignature,
+    Chord, DirectionSign, Duration, GraceEffect, GraceEffectTransition,
+    GuitarString, KeySignature,
     LyricLine, Lyrics, Measure, MeasureHeader, NaturalHarmonic, Note,
     NoteType, SlideType, Song, TimeSignature, Track, Voice,
 )
@@ -56,19 +58,15 @@ def _apply_stroke(beat: Beat, stroke: str | None) -> None:
 
 
 def _key_signature(name: str) -> KeySignature | None:
-    """'C'·'Am'·'F#' 같은 조성 표기를 GP5 KeySignature 로. 모르면 None.
-
-    단조는 나란한장조와 조표가 같다 — GP5 도 조표만 담으므로 그렇게 눕힌다.
-    """
+    """'C'·'Am'·'F#' 같은 조성을 조표와 장·단조 모드까지 보존한다."""
     text = (name or "").strip().replace("♯", "#").replace("♭", "b")
-    if not text:
+    match = re.fullmatch(r"([A-G])([#b]?)(m?)", text)
+    if match is None:
         return None
-    relative_major = {"Am": "C", "Em": "G", "Bm": "D", "F#m": "A", "C#m": "E",
-                      "G#m": "B", "D#m": "F#", "Dm": "F", "Gm": "Bb",
-                      "Cm": "Eb", "Fm": "Ab", "Bbm": "Db"}
-    text = relative_major.get(text, text)
-    suffix = {"#": "Sharp", "b": "Flat"}.get(text[1:2], "")
-    return getattr(KeySignature, f"{text[0]}Major{suffix}", None)
+    root, accidental, minor = match.groups()
+    mode = "Minor" if minor else "Major"
+    suffix = {"#": "Sharp", "b": "Flat"}.get(accidental, "")
+    return getattr(KeySignature, f"{root}{mode}{suffix}", None)
 
 
 def _first_lyric_measure(ir: dict) -> int | None:
@@ -89,7 +87,7 @@ def _lyrics_for(ir: dict) -> Lyrics | None:
         return None
     tokens = [beat.get("lyric") or ""
               for measure in ir["measures"] if measure["index"] >= start
-              for beat in measure["beats"]]
+              for beat in measure["beats"] if beat.get("voice", 0) == 0]
     lines = [LyricLine(startingMeasure=start + 1, lyrics=" ".join(tokens))]
     # 2절 이하는 beat 배정 없이 통째로 넘긴다 — GP 가 같은 선율에 분배한다.
     # 시작 마디는 그 절이 처음 나타난 시스템의 첫 마디다 (1절 시작으로
@@ -253,8 +251,9 @@ def build_song(ir: dict, *, lyric_mode: str = DEFAULT_LYRIC_MODE) -> Song:
 
         measure = Measure(track, header)
         measure.voices.clear()
-        voice = Voice(measure)
+        voices = [Voice(measure) for _ in range(GP5_VOICE_SLOTS)]
         for beat_ir in measure_ir["beats"]:
+            voice = voices[beat_ir.get("voice", 0)]
             # 음이 없는 beat(명시적 쉼표, 보이싱 모르는 슬래시)은 GP 표준대로
             # rest 로 쓴다 — normal/0노트는 GP 가 그리지 못하는 비정상 인코딩이다
             is_silent = beat_ir.get("rest") or not beat_ir["notes"]
@@ -279,7 +278,12 @@ def build_song(ir: dict, *, lyric_mode: str = DEFAULT_LYRIC_MODE) -> Song:
                     velocity=DEFAULT_VELOCITY, type=note_type,
                 )
                 if note_ir.get("grace_fret") is not None:
-                    note.effect.grace = GraceEffect(fret=note_ir["grace_fret"])
+                    note.effect.grace = GraceEffect(
+                        fret=note_ir["grace_fret"],
+                        transition=getattr(
+                            GraceEffectTransition,
+                            note_ir.get("grace_transition", "none"),
+                            GraceEffectTransition.none))
                 beat.notes.append(note)
             _apply_stroke(beat, beat_ir.get("stroke"))
             _apply_techniques(beat, beat_ir.get("techniques", ()))
@@ -294,13 +298,11 @@ def build_song(ir: dict, *, lyric_mode: str = DEFAULT_LYRIC_MODE) -> Song:
                     beat.effect.chord = diagram
                 previous_chord = chord_name
             voice.beats.append(beat)
-        if not voice.beats:
+        if not any(voice.beats for voice in voices):
             # 빈 마디를 beat 0개로 쓰면 GP 가 그리지 못한다 — 온쉼표 하나로 채운다
-            voice.beats.append(Beat(voice, duration=Duration(value=1),
-                                    status=BeatStatus.rest))
-        measure.voices.append(voice)
-        while len(measure.voices) < GP5_VOICE_SLOTS:
-            measure.voices.append(Voice(measure))
+            voices[0].beats.append(Beat(voices[0], duration=Duration(value=1),
+                                       status=BeatStatus.rest))
+        measure.voices.extend(voices)
         track.measures.append(measure)
 
     song.tracks.append(track)

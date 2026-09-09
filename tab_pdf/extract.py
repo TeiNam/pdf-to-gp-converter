@@ -348,30 +348,71 @@ def _stroke_at(geo, system: geometry.System, x: float) -> str | None:
     return None
 
 
-def _detect_time_signature(geo, system: geometry.System) -> tuple[int, int] | None:
-    """멜로디 staff 의 SMuFL timeSig 숫자에서 박자표를 읽는다.
+# 박자표 숫자 무리를 서로 다른 표기로 볼 x 간격 (pt). 한 표기의 숫자들은
+# 몇 pt 안에 모이고, 마디 중간 박자 변경은 마디 하나(수십 pt) 이상 떨어진다
+TIMESIG_REGION_GAP = 20.0
 
-    분자·분모가 같은 x 에 위로/아래로 쌓여 있다. 못 찾으면 None.
+
+def _read_timesig_region(region: list[geometry.Glyph], index: int,
+                         warn: _Warnings) -> tuple[int, int] | None:
+    """숫자 무리 하나를 (분자, 분모) 로 읽는다. 위/아래 행으로 가른다.
+
+    12/8 처럼 분자가 두 자리면 x 열 묶음으로는 읽을 수 없다 — 분자·분모는
+    항상 위아래 두 행이므로 y 중간값으로 가르고 행 안에서 x 순으로 잇는다.
+    """
+    ys = sorted(g.y for g in region)
+    middle = (ys[0] + ys[-1]) / 2
+    upper = sorted((g for g in region if g.y < middle), key=lambda g: g.x)
+    lower = sorted((g for g in region if g.y >= middle), key=lambda g: g.x)
+    if not upper or not lower:
+        warn.add(index, "time_signature",
+                 f"박자표 숫자 {len(region)}개를 분자/분모로 가르지 못했다 "
+                 f"— 표기를 무시한다")
+        return None
+    def row_value(row):
+        return int("".join(str(ord(g.char) - SMUFL_TIMESIG_DIGIT_BASE)
+                           for g in row))
+    return row_value(upper), row_value(lower)
+
+
+def _detect_time_signatures(geo, system: geometry.System, index: int,
+                            warn: _Warnings
+                            ) -> list[tuple[float, tuple[int, int]]]:
+    """멜로디 staff 의 박자표 표기를 (x, (분자, 분모)) 목록으로 읽는다.
+
+    한 시스템에 표기가 여럿일 수 있다(마디 중간 박자 변경) — 전부 돌려주고
+    적용 시점은 호출자가 마디 경계로 정한다.
     """
     low, high = SMUFL_TIMESIG_DIGIT_RANGE
-    digits = [g for g in geo.glyphs
-              if low <= ord(g.char) <= high
-              and system.melody_ys[0] - SPAN_SLACK <= g.y
-              <= system.melody_ys[-1] + SPAN_SLACK]
-    if len(digits) < 2:
-        return None
-    columns: dict[float, list[geometry.Glyph]] = {}
-    for glyph in sorted(digits, key=lambda g: (g.x, g.y)):
-        key = next((k for k in columns if abs(k - glyph.x) <= BEAT_CLUSTER_TOLERANCE),
-                   glyph.x)
-        columns.setdefault(key, []).append(glyph)
-    for _, column in sorted(columns.items()):
-        if len(column) != 2:
+
+    def in_melody(g: geometry.Glyph) -> bool:
+        return (system.melody_ys[0] - SPAN_SLACK <= g.y
+                <= system.melody_ys[-1] + SPAN_SLACK)
+
+    result: list[tuple[float, tuple[int, int]]] = []
+    # common/cut time 은 숫자가 아니라 단독 기호다
+    for glyph in geo.glyphs:
+        if not in_melody(glyph):
             continue
-        upper, lower = sorted(column, key=lambda g: g.y)
-        return (ord(upper.char) - SMUFL_TIMESIG_DIGIT_BASE,
-                ord(lower.char) - SMUFL_TIMESIG_DIGIT_BASE)
-    return None
+        name = smufl.name(glyph.char)
+        if name == "timeSigCommon":
+            result.append((glyph.x, (4, 4)))
+        elif name == "timeSigCutCommon":
+            result.append((glyph.x, (2, 2)))
+    digits = sorted((g for g in geo.glyphs
+                     if low <= ord(g.char) <= high and in_melody(g)),
+                    key=lambda g: g.x)
+    region: list[geometry.Glyph] = []
+    for glyph in digits + [None]:
+        if region and (glyph is None
+                       or glyph.x - region[-1].x > TIMESIG_REGION_GAP):
+            sig = _read_timesig_region(region, index, warn)
+            if sig is not None:
+                result.append((region[0].x, sig))
+            region = []
+        if glyph is not None:
+            region.append(glyph)
+    return sorted(result)
 
 
 def _techniques(geo, system, x0, x1, fret_glyphs, letter_index) -> list[dict]:
@@ -1018,13 +1059,8 @@ def extract_ir(pdf_path: str, tempo: int | None = None,
                              "시스템을 찾았으나 두 staff 를 관통하는 마디선이 없다 "
                              "— 이 단을 건너뛴다")
                     continue
-                detected = _detect_time_signature(geo, system)
-                if detected is not None and detected != time_sig:
-                    time_sig = detected
-                    if detected != DEFAULT_TIME_SIG:
-                        warn.add(len(measures), "time_signature",
-                                 f"{detected[0]}/{detected[1]} 박자를 감지했다 "
-                                 f"— 이 경로는 실제 악보로 검증되지 않았다")
+                detected_sigs = _detect_time_signatures(
+                    geo, system, len(measures), warn)
                 if not measures:
                     header.update(_header_fields(geo, system))
                 tokens = _chord_tokens(geo, system, all_bounds[-1][1] + 1.0)
@@ -1034,6 +1070,17 @@ def extract_ir(pdf_path: str, tempo: int | None = None,
                     extra_lyric_rows.setdefault(row_index, []).extend(
                         char for _, char in row)
                 for bounds in all_bounds:
+                    # 박자표는 표기된 마디부터 적용된다 — 시스템 첫 마디로
+                    # 소급하면 중간 박자 변경이 앞 마디를 망가뜨린다
+                    while detected_sigs and detected_sigs[0][0] < bounds[1]:
+                        _, sig = detected_sigs.pop(0)
+                        if sig == time_sig:
+                            continue
+                        time_sig = sig
+                        if sig != DEFAULT_TIME_SIG:
+                            warn.add(len(measures), "time_signature",
+                                     f"{sig[0]}/{sig[1]} 박자를 감지했다 "
+                                     f"— 이 경로는 실제 악보로 검증되지 않았다")
                     measure = _build_measure(
                         geo, system, bounds, len(measures), tokens, warn,
                         time_sig, letter_index, syllables, carried_chord,

@@ -86,6 +86,59 @@ def test_real_pdf_x_noteheads_become_dead_notes():
     assert len(dead) == 8
 
 
+# ── #15 박자표 견고성 ────────────────────────────────────────────────────────
+
+def _timesig_digit(value: int) -> str:
+    return chr(0xE080 + value)
+
+
+def test_two_digit_numerator_is_parsed():
+    """12/8 — 분자 숫자 두 개는 x 열이 아니라 y 행(위/아래)으로 갈라 읽는다."""
+    glyphs = [
+        _glyph(100.0, 105.0, _timesig_digit(1)),
+        _glyph(105.0, 105.0, _timesig_digit(2)),
+        _glyph(102.0, 115.0, _timesig_digit(8)),
+    ]
+    geo = geometry.PageGeometry(glyphs=glyphs)
+    warn = extract._Warnings()
+    assert extract._detect_time_signatures(geo, SYSTEM, 0, warn) \
+        == [(100.0, (12, 8))]
+
+
+def test_common_and_cut_time_glyphs():
+    common = geometry.PageGeometry(glyphs=[_glyph(100.0, 110.0, chr(0xE08A))])
+    cut = geometry.PageGeometry(glyphs=[_glyph(100.0, 110.0, chr(0xE08B))])
+    warn = extract._Warnings()
+    assert extract._detect_time_signatures(common, SYSTEM, 0, warn) \
+        == [(100.0, (4, 4))]
+    assert extract._detect_time_signatures(cut, SYSTEM, 0, warn) \
+        == [(100.0, (2, 2))]
+
+
+def test_unparsable_timesig_digits_are_warned():
+    """분모 없는 외톨이 숫자는 조용히 무시하지 않는다."""
+    geo = geometry.PageGeometry(glyphs=[_glyph(100.0, 105.0, _timesig_digit(3))])
+    warn = extract._Warnings()
+    assert extract._detect_time_signatures(geo, SYSTEM, 0, warn) == []
+    assert any(w["kind"] == "time_signature" for w in warn.items)
+
+
+def test_mid_system_time_signature_change_applies_from_its_measure(
+        tmp_path, monkeypatch):
+    """시스템 중간의 박자 변경이 시스템 첫 마디로 소급되면 안 된다."""
+    pdf = _score_pdf(tmp_path / "mid.pdf", barlines=[240.0, 390.0],
+                     note_xs=[50.0, 100.0, 150.0, 200.0,   # m0: 4/4 4분음 4개
+                              250.0, 295.0, 340.0])        # m1: 3/4 4분음 3개
+    monkeypatch.setattr(
+        extract, "_detect_time_signatures",
+        lambda geo, system, index, warn: [(45.0, (4, 4)), (245.0, (3, 4))])
+    ir = extract.extract_ir(pdf, title="mid")
+    assert ir["measures"][0]["time_sig"] == [4, 4]
+    assert ir["measures"][1]["time_sig"] == [3, 4]
+    assert [b["duration"] for b in ir["measures"][1]["beats"]] == [4, 4, 4]
+    assert not any(w["kind"] == "duration_mismatch" for w in ir["warnings"])
+
+
 # ── #12 다절 가사는 x순으로 섞이면 안 된다 ───────────────────────────────────
 
 def test_second_lyric_row_does_not_interleave_with_first():

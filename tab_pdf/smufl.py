@@ -74,6 +74,8 @@ NAMES: dict[int, str] = {
     0xE043: "repeatDots",               # 도트만 — 방향을 모른다
     0xE047: "segno",
     0xE048: "coda",
+    0xE08A: "timeSigCommon",            # C — 4/4
+    0xE08B: "timeSigCutCommon",         # ¢ — 2/2
     0xE050: "gClef",
     0xE0A2: "noteheadWhole",
     0xE0A3: "noteheadHalf",

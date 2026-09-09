@@ -10,7 +10,12 @@ from dataclasses import dataclass
 
 # 코드명 후보 판정. A~G 로 시작해야 하므로 'H'(해머온)·'2'/'3'(페이지 번호)는 걸러지고,
 # 미등록 코드('Bm7')는 통과해 unknown_chord 경고 경로가 살아난다.
-_CHORD_PATTERN = re.compile(r"^[A-G](?:[#b])?[A-Za-z0-9#b/+()-]*$")
+# 유니코드 임시표(♯♭)도 받는다 — parse() 는 이미 받는데 여기서 거르면
+# 'C♯m' 표기가 코드 행에서 통째로 사라진다.
+_CHORD_PATTERN = re.compile(r"^[A-G](?:[#b♯♭])?[A-Za-z0-9#b♯♭/+()-]*$")
+# A~G 로 시작하지만 코드가 아닌 악보 진행 지시어. 코드로 오인하면 chord_row 를
+# 오염시키고, 이어지는 슬래시 beat 이 이 이름의 보이싱을 찾다 무음이 된다.
+_PROGRESSION_WORDS = frozenset({"Fine", "Coda"})
 
 # GP4/5 는 코드명을 22바이트 고정 필드에 쓴다 (pyguitarpro writeByteSizeString(…, 22)).
 # 넘치면 조용히 잘려서 IR 과 .gp5 의 코드명이 달라진다 — 실측으로 30자가 22자로 잘렸다.
@@ -27,7 +32,10 @@ VOICINGS: dict[str, tuple[tuple[int, int], ...]] = {
 
 def looks_like_chord(token: str) -> bool:
     """코드명 형태인지. 미등록 코드도 True 여야 경고 경로가 살아난다."""
-    return bool(_CHORD_PATTERN.match(token.strip()))
+    text = token.strip()
+    if text in _PROGRESSION_WORDS:
+        return False
+    return bool(_CHORD_PATTERN.match(text))
 
 
 def name_fits(name: str, encoding: str = "cp949") -> bool:
@@ -199,11 +207,20 @@ def voicing_matches(name: str, voicing, tuning) -> bool | None:
     return True
 
 
-def voicing_for(name: str | None) -> tuple[tuple[int, int], ...] | None:
-    """코드명의 보이싱. 모르는 코드는 None."""
+def voicing_for(name: str | None,
+                tuning=None) -> tuple[tuple[int, int], ...] | None:
+    """코드명의 보이싱. 모르는 코드는 None.
+
+    `tuning` 을 주면 그 튜닝에서 실제로 그 코드로 소리 나는지 음정으로
+    검증한다 — 표의 모양은 표준 튜닝 기준이라, Drop-D 에서 표준 G 모양은
+    6번줄이 F 가 된다. 틀린 소리를 조용히 내느니 None(경고 경로)이 낫다.
+    """
     if name is None:
         return None
-    return VOICINGS.get(name.strip())
+    voicing = VOICINGS.get(name.strip())
+    if voicing is None or tuning is None:
+        return voicing
+    return voicing if voicing_matches(name, voicing, tuning) else None
 
 
 def voicing_in(ir: dict, name: str | None) -> tuple[tuple[int, int], ...] | None:
@@ -212,7 +229,7 @@ def voicing_in(ir: dict, name: str | None) -> tuple[tuple[int, int], ...] | None
     검증된 표를 AI 가 덮지 못하게 하는 우선순위가 여기 한 곳에만 있어야 한다 —
     build 와 corrections 가 각자 판단하면 언젠가 어긋난다.
     """
-    verified = voicing_for(name)
+    verified = voicing_for(name, ir.get("tuning"))
     if verified is not None:
         return verified
     if name is None:

@@ -1,12 +1,15 @@
 """IR → pyguitarpro Song. PDF 를 전혀 모른다."""
 
+import contextlib
+import os
+import tempfile
+
 import guitarpro as gp
 from guitarpro.models import (
     Beat, BeatStatus, BeatStrokeDirection, BendEffect, BendPoint, BendType,
-    Chord, Duration, GuitarString, KeySignature, LyricLine, Lyrics, Measure,
-    MeasureHeader,
-    NaturalHarmonic, Note, NoteType, SlideType, Song, TimeSignature, Track,
-    Voice,
+    Chord, DirectionSign, Duration, GraceEffect, GuitarString, KeySignature,
+    LyricLine, Lyrics, Measure, MeasureHeader, NaturalHarmonic, Note,
+    NoteType, SlideType, Song, TimeSignature, Track, Voice,
 )
 
 from . import chords
@@ -88,7 +91,13 @@ def _lyrics_for(ir: dict) -> Lyrics | None:
               for measure in ir["measures"] if measure["index"] >= start
               for beat in measure["beats"]]
     lines = [LyricLine(startingMeasure=start + 1, lyrics=" ".join(tokens))]
-    lines += [LyricLine() for _ in range(LYRIC_LINE_COUNT - 1)]
+    # 2절 이하는 beat 배정 없이 통째로 넘긴다 — GP 가 같은 선율에 분배한다.
+    # 시작 마디는 그 절이 처음 나타난 시스템의 첫 마디다 (1절 시작으로
+    # 뭉뚱그리면 뒤에서 시작하는 절이 앞당겨진다)
+    lines += [LyricLine(startingMeasure=row["start"] + 1, lyrics=row["text"])
+              for row in ir.get("extra_lyric_rows", ())[:LYRIC_LINE_COUNT - 1]]
+    lines = lines[:LYRIC_LINE_COUNT]
+    lines += [LyricLine() for _ in range(LYRIC_LINE_COUNT - len(lines))]
     return Lyrics(trackChoice=LYRICS_TRACK, lines=lines)
 
 
@@ -196,6 +205,15 @@ def _make_header(measure_ir: dict, key: KeySignature | None) -> MeasureHeader:
     header.timeSignature = signature
     if key is not None:
         header.keySignature = key
+    # 곡 진행 기호 — 세뇨·코다는 도착점(direction), D.S./To Coda 는 도약점
+    if measure_ir.get("direction"):
+        header.direction = DirectionSign(measure_ir["direction"])
+    if measure_ir.get("from_direction"):
+        header.fromDirection = DirectionSign(measure_ir["from_direction"])
+    if measure_ir.get("repeat_open"):
+        header.isRepeatOpen = True
+    if measure_ir.get("repeat_close"):
+        header.repeatClose = 1          # 반복 횟수 표기가 없으면 한 번 되풀이
     return header
 
 
@@ -223,6 +241,7 @@ def build_song(ir: dict, *, lyric_mode: str = DEFAULT_LYRIC_MODE) -> Song:
 
     track = Track(song, name="Guitar")
     track.channel.instrument = NYLON_GUITAR_MIDI_PROGRAM
+    track.offset = ir.get("capo", 0)        # GP5 의 카포 필드
     track.strings = [GuitarString(i + 1, value)
                      for i, value in enumerate(ir["tuning"])]
     track.measures.clear()
@@ -236,17 +255,32 @@ def build_song(ir: dict, *, lyric_mode: str = DEFAULT_LYRIC_MODE) -> Song:
         measure.voices.clear()
         voice = Voice(measure)
         for beat_ir in measure_ir["beats"]:
+            # 음이 없는 beat(명시적 쉼표, 보이싱 모르는 슬래시)은 GP 표준대로
+            # rest 로 쓴다 — normal/0노트는 GP 가 그리지 못하는 비정상 인코딩이다
+            is_silent = beat_ir.get("rest") or not beat_ir["notes"]
+            duration = Duration(value=beat_ir["duration"],
+                                isDotted=beat_ir["dotted"])
+            if beat_ir.get("tuplet"):
+                duration.tuplet.enters, duration.tuplet.times = beat_ir["tuplet"]
             beat = Beat(
                 voice,
-                duration=Duration(value=beat_ir["duration"],
-                                  isDotted=beat_ir["dotted"]),
-                status=BeatStatus.normal,
+                duration=duration,
+                status=BeatStatus.rest if is_silent else BeatStatus.normal,
             )
             for note_ir in beat_ir["notes"]:
-                beat.notes.append(Note(
+                if note_ir.get("dead"):
+                    note_type = NoteType.dead
+                elif note_ir.get("tie"):
+                    note_type = NoteType.tie
+                else:
+                    note_type = NoteType.normal
+                note = Note(
                     beat, value=note_ir["fret"], string=note_ir["string"],
-                    velocity=DEFAULT_VELOCITY, type=NoteType.normal,
-                ))
+                    velocity=DEFAULT_VELOCITY, type=note_type,
+                )
+                if note_ir.get("grace_fret") is not None:
+                    note.effect.grace = GraceEffect(fret=note_ir["grace_fret"])
+                beat.notes.append(note)
             _apply_stroke(beat, beat_ir.get("stroke"))
             _apply_techniques(beat, beat_ir.get("techniques", ()))
             if lyric_mode == "beat":
@@ -260,6 +294,10 @@ def build_song(ir: dict, *, lyric_mode: str = DEFAULT_LYRIC_MODE) -> Song:
                     beat.effect.chord = diagram
                 previous_chord = chord_name
             voice.beats.append(beat)
+        if not voice.beats:
+            # 빈 마디를 beat 0개로 쓰면 GP 가 그리지 못한다 — 온쉼표 하나로 채운다
+            voice.beats.append(Beat(voice, duration=Duration(value=1),
+                                    status=BeatStatus.rest))
         measure.voices.append(voice)
         while len(measure.voices) < GP5_VOICE_SLOTS:
             measure.voices.append(Voice(measure))
@@ -274,5 +312,29 @@ def build_song(ir: dict, *, lyric_mode: str = DEFAULT_LYRIC_MODE) -> Song:
 
 
 def write_gp5(song: Song, file_path: str) -> None:
-    """.gp5 로 쓴다. 인코딩은 고정 — 한글 제목이 깨지면 안 된다."""
-    gp.write(song, file_path, version=GP5_VERSION, encoding=GP5_ENCODING)
+    """.gp5 로 쓴다. 인코딩은 고정 — 한글 제목이 깨지면 안 된다.
+
+    임시 파일에 다 쓴 뒤 바꿔치기한다 — 직렬화가 도중에 실패해도 같은
+    경로의 기존 파일이 잘리지 않는다. 임시 이름은 mkstemp 로 만든다 —
+    예측 가능한 `<이름>.tmp` 는 심볼릭 링크를 심어 임의 파일을 덮어쓰게
+    할 수 있고, 같은 출력을 향한 동시 변환끼리도 충돌한다.
+    """
+    directory = os.path.dirname(os.path.abspath(file_path))
+    handle, tmp_path = tempfile.mkstemp(
+        prefix=os.path.basename(file_path) + ".", dir=directory)
+    os.close(handle)
+    try:
+        gp.write(song, tmp_path, version=GP5_VERSION, encoding=GP5_ENCODING)
+        # mkstemp 는 0600 으로 만든다 — 그대로 두면 산출물이 사용자 전용이
+        # 된다. 덮어쓰기면 기존 파일의 권한을, 새 파일이면 관례(644)를 쓴다.
+        # umask 를 읽으려 os.umask 를 만지면 프로세스 전역 상태라 위험하다.
+        try:
+            mode = os.stat(file_path).st_mode & 0o777
+        except FileNotFoundError:
+            mode = 0o644
+        os.chmod(tmp_path, mode)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.remove(tmp_path)
+        raise
+    os.replace(tmp_path, file_path)

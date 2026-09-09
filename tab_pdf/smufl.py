@@ -30,7 +30,8 @@ STRING_TECHNIQUE = (0xE610, 0xE62F)
 PLUCK = (0xE630, 0xE63F)
 KEYBOARD = (0xE650, 0xE67F)
 GUITAR = (0xE830, 0xE85F)
-ANALYTICS = (0xE860, 0xE88F)
+ANALYTICS = (0xE860, 0xE87F)
+TUPLET = (0xE880, 0xE88F)          # 잇단음표 숫자·콜론
 ARROW = (0xEB60, 0xEB8F)
 PRIVATE_USE = (0xE000, 0xF8FF)
 
@@ -60,6 +61,7 @@ LABELS: tuple[tuple[tuple[int, int], str], ...] = (
     (KEYBOARD, "건반기호"),
     (GUITAR, "기타주법"),
     (ANALYTICS, "분석기호"),
+    (TUPLET, "잇단음표숫자"),
     (ARROW, "화살표"),
 )
 
@@ -68,8 +70,14 @@ LABELS: tuple[tuple[tuple[int, int], str], ...] = (
 # 까지만 말해주는데, GP5 로 옮기려면 악센트인지 스타카토인지를 알아야 한다.
 # 실측: 이 악보의 U+E4A1 은 타브 아래 '>' 로 그려지는 악센트다 (렌더해서 확인했다).
 NAMES: dict[int, str] = {
+    0xE040: "repeatLeft",               # 반복 시작 바라인
+    0xE041: "repeatRight",              # 반복 끝 바라인
+    0xE042: "repeatRightLeft",          # 끝나며 곧바로 시작
+    0xE043: "repeatDots",               # 도트만 — 방향을 모른다
     0xE047: "segno",
     0xE048: "coda",
+    0xE08A: "timeSigCommon",            # C — 4/4
+    0xE08B: "timeSigCutCommon",         # ¢ — 2/2
     0xE050: "gClef",
     0xE0A2: "noteheadWhole",
     0xE0A3: "noteheadHalf",
@@ -105,6 +113,7 @@ NAMES: dict[int, str] = {
     0xE610: "stringsDownBow",           # 타브에서는 다운스트로크
     0xE612: "stringsUpBow",             # 타브에서는 업스트로크
     0xE614: "stringsHarmonic",
+    0xE883: "tuplet3",                  # 셋잇단 숫자 '3'
 }
 
 

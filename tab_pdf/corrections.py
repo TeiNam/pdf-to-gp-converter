@@ -354,6 +354,8 @@ def _apply_lyric_group(measure: dict, group: list[dict]) -> str | None:
         text = correction.get("text")
         if text is not None and not isinstance(text, str):
             return f"text 가 문자열이 아니다: {text!r}"
+        if text and measure["beats"][beat_index].get("voice", 0) != 0:
+            return "가사 줄은 첫 성부에 배정해야 한다"
         placement[beat_index] = placement.get(beat_index, "") + (text or "")
 
     before = _lyric_text(measure)
@@ -388,6 +390,37 @@ def _char_positions(texts) -> list[int]:
 
 def _reject(correction: dict, reason: str) -> dict:
     return {"correction": correction, "reason": reason}
+
+
+def _refresh_chord_warnings(ir: dict, measures: dict) -> None:
+    """기존 코드 경고를 최종 음·보이싱으로 재판정한다. 다른 경고는 보존한다."""
+    warnings, checked = [], set()
+    for warning in ir.get("warnings", []):
+        kind, index = warning["kind"], warning["measure"]
+        measure = measures.get(index)
+        if kind not in ("unknown_chord", "chord_no_voicing") or measure is None:
+            warnings.append(warning)
+            continue
+        # 같은 마디의 일부 코드만 해결돼도 미해결 beat만 정확히 남긴다.
+        key = (index, kind)
+        if key in checked:
+            continue
+        checked.add(key)
+        for position, beat in enumerate(measure["beats"]):
+            name = beat.get("chord")
+            voicing = chords.voicing_in(ir, name) if name else None
+            if kind == "unknown_chord":
+                unresolved = beat.get("from_chord") and (not beat["notes"] or voicing is None)
+                detail = "코드 음을 만들 수 없다"
+            else:
+                unresolved = name and voicing is None
+                detail = "보이싱을 몰라 다이어그램을 만들 수 없다"
+            if unresolved:
+                warnings.append({
+                    "measure": index, "beat": position, "kind": kind,
+                    "detail": f"beat {position}: {name or '코드명 없음'} — {detail}",
+                })
+    ir["warnings"] = warnings
 
 
 def apply_corrections(ir: dict, proposals: list[dict]) -> tuple[dict, Outcome]:
@@ -451,6 +484,7 @@ def apply_corrections(ir: dict, proposals: list[dict]) -> tuple[dict, Outcome]:
             applied.extend(group)
 
     realized += _realize_chord_beats(result)
+    _refresh_chord_warnings(result, measures)
     return result, Outcome(tuple(applied), tuple(rejected), realized)
 
 

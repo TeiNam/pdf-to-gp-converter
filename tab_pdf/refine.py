@@ -139,8 +139,11 @@ def _batch_payload(ir: dict, measures: list[dict]) -> str:
                 "beats": [
                     {
                         "beat": position,
+                        "voice": beat.get("voice", 0),
+                        "rest": beat.get("rest", False),
                         "duration": beat["duration"],
                         "dotted": beat["dotted"],
+                        "tuplet": beat.get("tuplet"),
                         "notes": beat["notes"],
                         "chord": beat.get("chord"),
                         "stroke": beat.get("stroke"),

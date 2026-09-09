@@ -43,13 +43,27 @@ class VLine:
 
 
 @dataclass(frozen=True)
-class Curve:
-    """한 드로잉의 곡선(타이·슬러 호) — 좌측 끝과 우측 끝만 쓴다."""
+class Beam:
+    """두께를 걷어낸 빔 중심선. 기울어진 빔도 그대로 보존한다."""
 
     x0: float
     y0: float
     x1: float
     y1: float
+
+    def y_at(self, x: float) -> float:
+        return self.y0 + (self.y1 - self.y0) * (x - self.x0) / (self.x1 - self.x0)
+
+
+@dataclass(frozen=True)
+class Curve:
+    """타이·슬러의 양 끝점과 호가 부푼 방향."""
+
+    x0: float
+    y0: float
+    x1: float
+    y1: float
+    above: bool | None = None
 
 
 @dataclass(frozen=True)
@@ -68,6 +82,7 @@ class PageGeometry:
     vlines: list[VLine] = field(default_factory=list)
     glyphs: list[Glyph] = field(default_factory=list)
     curves: list[Curve] = field(default_factory=list)
+    beams: list[Beam] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -92,6 +107,53 @@ def _iter_segments(page):
                     yield rect.x0, rect.y0, rect.x0, rect.y1
 
 
+def _beam_polygon(points) -> Beam | None:
+    """검은 사각형의 좌우 변을 잇는다. 삽화·슬러의 임의 경로는 받지 않는다."""
+    x0, x1 = min(p.x for p in points), max(p.x for p in points)
+    if x1 - x0 < 3.0:
+        return None
+    left = [p.y for p in points if abs(p.x - x0) < 0.5]
+    right = [p.y for p in points if abs(p.x - x1) < 0.5]
+    if len(left) + len(right) != len(points) or not left or not right:
+        return None
+    if not all(0.8 <= max(ys) - min(ys) <= 4.0 for ys in (left, right)):
+        return None
+    y0, y1 = (min(left) + max(left)) / 2, (min(right) + max(right)) / 2
+    if abs(y1 - y0) > (x1 - x0) / 2:
+        return None
+    return Beam(x0, y0, x1, y1)
+
+
+def _drawing_beams(drawing):
+    """빔은 검게 채운 사각형/평행사변형 또는 두꺼운 선이다."""
+    items = drawing["items"]
+    fill = drawing.get("fill")
+    if fill is not None and all(c <= 0.1 for c in fill):
+        for item in items:
+            if item[0] == "re":
+                rect = item[1]
+                beam = _beam_polygon([rect.tl, rect.tr, rect.bl, rect.br])
+                if beam is not None:
+                    yield beam
+            elif item[0] == "qu":
+                beam = _beam_polygon(list(item[1]))
+                if beam is not None:
+                    yield beam
+        if len(items) == 4 and all(item[0] == "l" for item in items):
+            beam = _beam_polygon([item[1] for item in items])
+            if beam is not None:
+                yield beam
+    elif (fill is None and drawing.get("color") is not None
+          and all(c <= 0.1 for c in drawing["color"])
+          and 0.8 <= (drawing.get("width") or 0) <= 4.0):
+        for item in items:
+            if item[0] != "l":
+                continue
+            a, b = sorted(item[1:], key=lambda p: p.x)
+            if b.x - a.x >= 3.0 and abs(b.y - a.y) <= (b.x - a.x) / 2:
+                yield Beam(a.x, a.y, b.x, b.y)
+
+
 def load_page_geometry(page) -> PageGeometry:
     geo = PageGeometry()
     for x0, y0, x1, y1 in _iter_segments(page):
@@ -103,12 +165,16 @@ def load_page_geometry(page) -> PageGeometry:
     # 곡선(타이·슬러 호). 한 호가 베지어 여러 조각이라 드로잉 단위로 모아
     # 좌우 끝점만 남긴다 — 음악적 해석(타이인지)은 extract 의 몫이다.
     for drawing in page.get_drawings():
+        geo.beams.extend(_drawing_beams(drawing))
         points = [point for item in drawing["items"] if item[0] == "c"
                   for point in (item[1], item[4])]
         if points:
             left = min(points, key=lambda p: p.x)
             right = max(points, key=lambda p: p.x)
-            geo.curves.append(Curve(left.x, left.y, right.x, right.y))
+            controls = [p.y for item in drawing["items"] if item[0] == "c"
+                        for p in (item[2], item[3])]
+            above = sum(controls) / len(controls) < (left.y + right.y) / 2
+            geo.curves.append(Curve(left.x, left.y, right.x, right.y, above))
 
     for block in page.get_text("rawdict")["blocks"]:
         for line in block.get("lines", []):

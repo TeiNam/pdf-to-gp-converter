@@ -126,7 +126,7 @@ def articulations(geo, system, x0, x1) -> list[tuple[geometry.Glyph, str]]:
 
 
 def attach_graces(beats: list[dict], grace_glyphs, system, index, warn,
-                  pending: list | None = None) -> list:
+                  pending: list | None = None, techniques=()) -> list:
     """꾸밈음을 다음 음(같은 줄)에 붙인다. 못 붙인 것은 다음 마디로 넘긴다.
 
     GP5 는 노트당 grace 를 하나만 담는다 — 둘 이상이 몰리면 마지막(주음에
@@ -139,7 +139,13 @@ def attach_graces(beats: list[dict], grace_glyphs, system, index, warn,
             warn.add(index, "grace_dropped",
                      f"꾸밈음 {glyph.char!r} 가 어느 줄에도 스냅되지 않았다")
             continue
-        entries.append({"x": glyph.x, "string": string, "fret": int(glyph.char)})
+        entry = {"x": glyph.x, "string": string, "fret": int(glyph.char)}
+        transition = next((t["kind"] for t in techniques
+                           if t.get("grace") and t["x"] == glyph.x
+                           and t["string"] == string), None)
+        if transition:
+            entry["transition"] = transition
+        entries.append(entry)
     leftover: list = []
     for entry in entries:
         target = next(
@@ -162,6 +168,9 @@ def attach_graces(beats: list[dict], grace_glyphs, system, index, warn,
                      f"뒤따르는 꾸밈음 {entry['fret']} 에 밀려났다 "
                      f"— GP5 는 노트당 하나만 담는다")
         target["grace_fret"] = entry["fret"]
+        target.pop("grace_transition", None)
+        if entry.get("transition"):
+            target["grace_transition"] = entry["transition"]
     return leftover
 
 
@@ -175,6 +184,11 @@ def apply_tie_curves(geo, system, system_measures: list[dict], warn) -> None:
     호를 짝짓는다.
     """
     beats = [beat for measure in system_measures for beat in measure["beats"]]
+    for voice in sorted({beat.get("voice", 0) for beat in beats}):
+        _apply_voice_ties(geo, system, [b for b in beats if b.get("voice", 0) == voice])
+
+
+def _apply_voice_ties(geo, system, beats):
     if not beats:
         return
     low = system.tab_ys[0] - bands.TAB_BAND_MARGIN
@@ -193,6 +207,23 @@ def apply_tie_curves(geo, system, system_measures: list[dict], warn) -> None:
             continue                    # 끝점이 음표와 무관하다 — 삽화 곡선
         shared = ({(n["string"], n["fret"]) for n in beats[left]["notes"]}
                   & {(n["string"], n["fret"]) for n in beats[right]["notes"]})
+        if not shared:
+            continue
+        # 슬래시 하나가 화음 전체를 나타낼 때만 모든 구성음에 타이를 건다.
+        if not (beats[left].get("from_chord") and beats[right].get("from_chord")):
+            middle = (curve.y0 + curve.y1) / 2
+            strings = {string for string, _ in shared
+                       if curve.above is None
+                       or (system.tab_ys[string - 1] >= middle
+                           if curve.above else system.tab_ys[string - 1] <= middle)}
+            if not strings:
+                continue
+            string = min(strings, key=lambda s: abs(system.tab_ys[s - 1] - middle))
+            spacing = (system.tab_ys[-1] - system.tab_ys[0]) / (len(system.tab_ys) - 1)
+            if max(abs(y - system.tab_ys[string - 1])
+                   for y in (curve.y0, curve.y1)) > spacing:
+                continue
+            shared = {pair for pair in shared if pair[0] == string}
         for note in beats[right]["notes"]:
             if (note["string"], note["fret"]) in shared:
                 note["tie"] = True

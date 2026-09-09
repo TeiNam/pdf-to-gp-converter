@@ -1,7 +1,7 @@
 """음길이를 4분음표 단위로 다루고, 마디 합 제약 아래 legal 값으로 스냅한다.
 
-PDF 를 모르는 순수 계산 모듈이다. x 간격이 음길이에 비례한다는 조판 성질만 쓴다.
-빔 기하를 쓰지 않는 이유는 docs/superpowers/plans/2026-08-31-pdf-tab-to-gp5.md 2절 참조.
+PDF 를 모르는 순수 계산 모듈이다. 추출기가 확정한 음가는 고정하고,
+나머지 음가만 x 간격 비례와 마디 합 제약으로 추정한다.
 """
 
 from dataclasses import dataclass
@@ -28,6 +28,7 @@ class LegalDuration:
 # 순서가 곧 동률의 승자다 — 비용이 같으면 앞선(평범한) 길이를 고른다.
 # 셋잇단이 정수 리듬을 밀어내지 않게 평범한 길이를 전부 앞에 둔다.
 LEGAL: tuple[LegalDuration, ...] = (
+    LegalDuration(1, True, 6.0),
     LegalDuration(1, False, 4.0),
     LegalDuration(2, True, 3.0),
     LegalDuration(2, False, 2.0),
@@ -94,10 +95,11 @@ REST_NAMES = frozenset(REST_DURATIONS) | {"restWhole"}
 def fit_durations(props: list[float], target: float,
                   pinned: dict[int, LegalDuration] | None = None,
                   allow_tuplets: bool = False,
+                  tuplet_indices: set[int] | None = None,
                   ) -> tuple[list[LegalDuration], bool]:
     """비례값을 legal 값으로 스냅하되 합이 정확히 target 이 되게 맞춘다.
 
-    독립 스냅은 반올림 때문에 합이 어긋난다. legal 길이가 모두 0.125 의 배수이므로
+    독립 스냅은 반올림 때문에 합이 어긋난다. legal 길이가 모두 1/48박의 배수이므로
     정수 단위 DP 로 "합이 정확히 target 이면서 스냅 오차 총합이 최소" 인 조합을
     찾는다. 그리디와 달리 해가 존재하면 반드시 찾는다 — 예: `[4.0, 4.0]` 을
     target 4.0 에 맞출 때 그리디는 실패했지만 DP 는 `[2.0, 2.0]` 을 찾는다.
@@ -109,12 +111,22 @@ def fit_durations(props: list[float], target: float,
     항상 켜 두면 x 간격이 우연히 3등분에 가까운 평범한 마디에 가짜
     셋잇단이 유입된다 (실측: 이 악보 m5·m7 이 바뀌었다).
 
+    `tuplet_indices`를 주면 그 묶음만 셋잇단으로, 나머지는 일반 음가로 푼다.
+
     Returns: (스냅 결과, 합이 정확히 맞았는지)
     """
     if not props:
         return [], True
     pins = pinned or {}
     legal_pool = LEGAL if allow_tuplets else PLAIN_LEGAL
+
+    def candidates_at(index):
+        if index in pins:
+            return (pins[index],)
+        if tuplet_indices is not None:
+            return tuple(d for d in LEGAL
+                         if bool(d.tuplet) == (index in tuplet_indices))
+        return legal_pool
 
     target_units = _units(target)
     if target_units <= 0:
@@ -127,7 +139,7 @@ def fit_durations(props: list[float], target: float,
         if index == len(props):
             return (0.0, ()) if remaining == 0 else None
         best: tuple[float, tuple[LegalDuration, ...]] | None = None
-        candidates = (pins[index],) if index in pins else legal_pool
+        candidates = candidates_at(index)
         for legal in candidates:
             need = _units(legal.quarters)
             if need > remaining:
@@ -148,5 +160,18 @@ def fit_durations(props: list[float], target: float,
     if solution is None:
         # 정확히 맞출 조합이 없다 — 거짓말하지 않고 최근접 스냅 + 실패 보고.
         # 고정 자리는 아는 값을 그대로 쓴다.
-        return [pins.get(i, _nearest(prop)) for i, prop in enumerate(props)], False
+        return [min(candidates_at(i), key=lambda d: abs(d.quarters - prop))
+                for i, prop in enumerate(props)], False
     return list(solution[1]), True
+
+
+def rest_durations(quarters: float) -> list[LegalDuration]:
+    """성부의 남은 무음을 표현한다. 기존 합 제약 풀이로 정확히 분할한다."""
+    if abs(quarters) < EPSILON:
+        return []
+    for count in range(1, 17):
+        result, exact = fit_durations(
+            [quarters / count] * count, quarters, allow_tuplets=True)
+        if exact:
+            return result
+    raise ValueError(f"쉼표로 표현할 수 없는 길이: {quarters}")

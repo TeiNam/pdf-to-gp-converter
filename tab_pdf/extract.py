@@ -6,11 +6,11 @@ IR 로 조립하는 뼈대다.
 """
 
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 import pymupdf
 
-from . import bands, chords, durations, geometry, header, lyrics, marks, smufl
+from . import bands, chords, durations, geometry, header, lyrics, marks, rhythm, smufl
 from .bands import CHORD_BAND_HEIGHT
 from .durations import REST_DURATIONS, REST_NAMES
 from .header import STANDARD_TUNING
@@ -183,7 +183,8 @@ def _grace_glyphs(geo, system, x0, x1, letter_index,
             and not _has_adjacent_letter(letter_index, g)]
 
 
-def _merge_two_digit_frets(glyphs, system, index, warn) -> list[geometry.Glyph]:
+def _merge_two_digit_frets(glyphs, system, index, warn,
+                           *, sources: dict | None = None) -> list[geometry.Glyph]:
     """같은 줄에서 커닝으로 붙은 숫자쌍을 두 자리 프렛 한 음으로 병합한다.
 
     '12' 는 숫자 글리프 2개(origin 간격 ~5pt)로 오는데, beat 클러스터 허용
@@ -191,6 +192,8 @@ def _merge_two_digit_frets(glyphs, system, index, warn) -> list[geometry.Glyph]:
     실측: 이 PDF 의 별개 음은 6.8pt 이상 떨어져 있어 6pt 문턱에 오탐이 없다.
     병합값이 프렛 상한을 넘는 쌍(붙은 '2''5' 따위)은 별개 음으로 두되 경고한다.
     """
+    if sources is not None:
+        sources.update((glyph, glyph) for glyph in glyphs)
     by_string: dict[int, list[geometry.Glyph]] = {}
     loose: list[geometry.Glyph] = []
     for glyph in glyphs:
@@ -221,9 +224,16 @@ def _merge_two_digit_frets(glyphs, system, index, warn) -> list[geometry.Glyph]:
                 merged.append(left)
                 position += 1
                 continue
-            merged.append(geometry.Glyph(
-                x=left.x, y=left.y, x_end=right.x_end,
-                char=left.char + right.char, font=left.font, size=left.size))
+            # 두 자리 수는 같은 음표 중심의 한 자리 수보다 왼쪽에서 시작한다.
+            # 중심을 한 글자 폭의 기준 좌표로 환산해 화음이 두 beat로 갈리지 않게 한다.
+            digit_width = ((left.x_end - left.x) + (right.x_end - right.x)) / 2
+            combined = geometry.Glyph(
+                x=(left.x + right.x_end - digit_width) / 2,
+                y=left.y, x_end=right.x_end,
+                char=left.char + right.char, font=left.font, size=left.size)
+            merged.append(combined)
+            if sources is not None:
+                sources[left] = sources[right] = combined
             position += 2
     return sorted(merged, key=lambda g: g.x)
 
@@ -346,7 +356,8 @@ def _stroke_at(geo, system: geometry.System, x: float) -> str | None:
 
 
 
-def _techniques(geo, system, x0, x1, fret_glyphs, letter_index) -> list[dict]:
+def _techniques(geo, system, x0, x1, fret_glyphs, letter_index,
+                grace_glyphs=()) -> list[dict]:
     """연주법 표기를 (x, 대상 줄, 종류) 로 뽑는다.
 
     표기의 y 는 대상 줄과 무관하다 (실측: 표기 y 는 5·3·4·1번줄로 흩어지는데
@@ -361,14 +372,15 @@ def _techniques(geo, system, x0, x1, fret_glyphs, letter_index) -> list[dict]:
             continue
         if _has_adjacent_letter(letter_index, glyph):
             continue                    # 주석 문장 속 글자다
-        before = [f for f in fret_glyphs if f.x <= glyph.x]
+        before = [f for f in [*fret_glyphs, *grace_glyphs] if f.x <= glyph.x]
         if not before:
             continue
         source = max(before, key=lambda f: f.x)
         string = _snap_to_string(source.y, system.tab_ys)
         if string is None:
             continue
-        result.append({"x": source.x, "string": string, "kind": kind})
+        result.append({"x": source.x, "string": string, "kind": kind,
+                       "grace": source in grace_glyphs})
     return result
 
 
@@ -565,15 +577,101 @@ def _assign_row_chords(beats: list[dict], tokens, bounds, index, warn, tuning,
     return leftover
 
 
+def _polyphonic_measure(geo, system, bounds, index, tokens, warn, time_sig,
+                         letter_index, syllables, carried_chord,
+                         pending_row_chord, pending_graces, tuning, cutoff):
+    """기존 단성부 해석을 성부별로 실행한 뒤 beat 인덱스를 다시 연결한다."""
+    raw_frets = _fret_glyphs(geo, system, -float("inf"), float("inf"), letter_index, cutoff)
+    sources = {}
+    # 성부 판정도 병합한 프렛 중심을 쓴다. 마디선을 가로질러 병합하지 않는다.
+    # 실제 경고는 아래 성부별 _build_measure가 원본 글리프에서 만든다.
+    frets = [g for left, right in (geometry.measure_bounds(geo, system) or [bounds])
+             for g in _merge_two_digit_frets(
+                 [f for f in raw_frets if left <= f.x < right],
+                 system, index, _Warnings(), sources=sources)]
+    graces = _grace_glyphs(geo, system, -float("inf"), float("inf"), letter_index, cutoff)
+    notes = frets + _dead_glyphs(geo, system, -float("inf"), float("inf")) + [
+        g for g in geo.glyphs if _in_range(g.char, SMUFL_SLASH_RANGE)
+        and _in_tab_band(g, system)]
+    rests = _rest_glyphs(geo, system, -float("inf"), float("inf"))
+    assigned = rhythm.voice_assignments(geo, system, notes, rests)
+    if assigned is None:
+        return None
+    assigned.update((raw, assigned[merged]) for raw, merged in sources.items())
+    for grace in graces:
+        same_string = [n for n in notes
+                       if _snap_to_string(n.y, system.tab_ys)
+                       == _snap_to_string(grace.y, system.tab_ys)]
+        following = [n for n in same_string if n.x > grace.x]
+        target = (min(following, key=lambda n: n.x) if following else
+                  min(same_string, key=lambda n: abs(n.x - grace.x), default=None))
+        assigned[grace] = assigned.get(target, 0)
+    for mark in geo.glyphs:
+        if mark.char not in TECHNIQUE_GLYPHS or not _in_tab_band(mark, system):
+            continue
+        before = [n for n in frets + graces if n.x <= mark.x]
+        source = max(before, key=lambda n: n.x, default=None)
+        assigned[mark] = assigned.get(source, 0)
+    parts = []
+    for voice in (0, 1):
+        part_geo = replace(
+            geo, glyphs=[g for g in geo.glyphs
+                         if g not in assigned or assigned[g] == voice])
+        part = _build_measure(
+            part_geo, system, bounds, index, tokens, warn, time_sig,
+            letter_index, syllables if voice == 0 else [],
+            carried_chord, pending_row_chord if voice == 0 else None,
+            [g for g in (pending_graces or []) if g.get("voice", 0) == voice],
+            tuning, _voice=voice)
+        for entry in part.get("pending_graces", []):
+            entry["voice"] = voice
+        parts.append(part)
+    merged = parts[0]
+    merged["kind"] = _classify(
+        any(p["kind"] in ("fret", "mixed") for p in parts),
+        any(p["kind"] in ("slash", "mixed") for p in parts))
+    entries = sorted(
+        ((b["x"], voice, i, b) for voice, part in enumerate(parts)
+         for i, b in enumerate(part["beats"])), key=lambda item: item[:3])
+    merged["beats"] = [b for _, _, _, b in entries]
+    positions = {(voice, i): new for new, (_, voice, i, _) in enumerate(entries)}
+    annotations = {}
+    for voice, part in enumerate(parts):
+        for entry in part["glyphs"]:
+            mapped = dict(entry)
+            mapped["beat"] = positions.get((voice, entry["beat"]))
+            key = tuple((k, v) for k, v in entry.items() if k != "beat")
+            current = annotations.get(key)
+            target = merged["beats"][mapped["beat"]] if mapped["beat"] is not None else None
+            if (current is None or (entry.get("string") is not None and target
+                                    and any(n["string"] == entry["string"]
+                                            for n in target["notes"]))):
+                annotations[key] = mapped
+    merged["glyphs"] = list(annotations.values())
+    merged["pending_row_chord"] = next(
+        (p.get("pending_row_chord") for p in parts if p.get("pending_row_chord")), None)
+    merged["pending_graces"] = [g for p in parts for g in p.get("pending_graces", [])]
+    merged.pop("_fit", None)   # 다른 성부의 길이를 합쳐 못갖춘마디로 재판정하지 않는다
+    return merged
+
+
 def _build_measure(geo, system, bounds, index, tokens, warn,
                    time_sig: tuple[int, int], letter_index,
                    syllables: list[tuple[float, str]],
                    carried_chord: str | None = None,
                    pending_row_chord: str | None = None,
                    pending_graces: list | None = None,
-                   tuning: tuple[int, ...] = STANDARD_TUNING) -> dict:
+                   tuning: tuple[int, ...] = STANDARD_TUNING,
+                   *, _voice: int | None = None) -> dict:
     x0, x1 = bounds
     grace_cutoff = _grace_cutoff(geo, system, letter_index)
+    if _voice is None:
+        polyphonic = _polyphonic_measure(
+            geo, system, bounds, index, tokens, warn, time_sig, letter_index,
+            syllables, carried_chord, pending_row_chord, pending_graces,
+            tuning, grace_cutoff)
+        if polyphonic is not None:
+            return polyphonic
     raw_fret_glyphs = _fret_glyphs(geo, system, x0, x1, letter_index,
                                    grace_cutoff)
     fret_glyphs = _merge_two_digit_frets(raw_fret_glyphs, system, index, warn)
@@ -586,10 +684,16 @@ def _build_measure(geo, system, bounds, index, tokens, warn,
     kind = _classify(fret_glyphs + dead_glyphs, slash_xs)
     _warn_unsupported(geo, system, x0, x1, index, warn)
 
-    techniques = _techniques(geo, system, x0, x1, fret_glyphs, letter_index)
+    techniques = _techniques(
+        geo, system, x0, x1, fret_glyphs, letter_index, grace_glyphs)
     articulations = _articulations(geo, system, x0, x1)
     beat_xs = _cluster([g.x for g in fret_glyphs + dead_glyphs + rest_glyphs]
                        + slash_xs)
+    note_glyphs = fret_glyphs + dead_glyphs + [
+        g for g in geo.glyphs
+        if x0 <= g.x < x1 and _in_range(g.char, SMUFL_SLASH_RANGE)
+        and _in_tab_band(g, system)]
+    known_pins = rhythm.note_pins(geo, system, beat_xs, note_glyphs, x1)
     # 쉼표는 자기 beat 자리를 갖는다. 이름이 길이를 말해주면 DP 에 고정한다.
     rest_positions: set[int] = set()
     rest_pins: dict[int, durations.LegalDuration] = {}
@@ -614,6 +718,7 @@ def _build_measure(geo, system, bounds, index, tokens, warn,
                 legal = durations.LegalDuration(
                     legal.value, True, legal.quarters * 1.5)
             rest_pins[position] = legal
+    known_pins.update(rest_pins)
     # 아티큘레이션은 표기 x 가 가장 가까운 beat 의 박 전체에 걸린다
     beat_articulations: dict[int, list[str]] = {}
     for art_glyph, art_kind in articulations:
@@ -655,19 +760,33 @@ def _build_measure(geo, system, bounds, index, tokens, warn,
     if repeats["open_next"]:
         measure["_repeat_open_next"] = True
     if not beat_xs:
-        warn.add(index, "empty_measure", f"판정 {kind}, x {x0:.1f}..{x1:.1f}")
-        return measure
+        if _voice is None:
+            warn.add(index, "empty_measure", f"판정 {kind}, x {x0:.1f}..{x1:.1f}")
+            return measure
 
-    # 셋잇단 숫자 '3' 이 **타브 대역**에 표기된 마디에서만 후보를 연다.
-    # 늘 열면 x 간격이 우연히 3등분에 가까운 마디에 가짜 셋잇단이 유입되고,
-    # 멜로디(노래) 파트의 잇단음표나 5잇단 표기가 기타 리듬을 오염시킨다
-    allow_tuplets = any(
-        x0 <= g.x < x1 and g.char == TUPLET_3 and _in_tab_band(g, system)
-        for g in geo.glyphs)
+    # 타브의 표기 묶음만 셋잇단으로 푼다. 오선 표기만 있는 경우에는
+    # 모든 타브 음가와 빔 묶음이 확정되고 마디 합을 유일하게 맞출 때만 보완한다.
     target = durations.target_quarters(*time_sig)
-    fitted, exact = durations.fit_durations(
-        durations.proportions(beat_xs, x1, target), target, pinned=rest_pins,
-        allow_tuplets=allow_tuplets)
+    groups = rhythm.triplet_groups(
+        geo, system, beat_xs, note_glyphs, bounds, raw_fret_glyphs + raw_grace_glyphs)
+    if not groups:
+        shared = rhythm.shared_triplet_group(
+            geo, system, beat_xs, note_glyphs, bounds, known_pins, target)
+        if shared:
+            groups = [shared]
+    tuplet_indices = {i for group in groups for i in group}
+    allow_tuplets = bool(tuplet_indices)
+    for position in tuplet_indices & known_pins.keys():
+        legal = known_pins[position]
+        known_pins[position] = durations.LegalDuration(
+            legal.value, legal.dotted, legal.quarters * 2 / 3, durations.TRIPLET)
+    if _voice is not None and len(known_pins) == len(beat_xs):
+        fitted = [known_pins[i] for i in range(len(beat_xs))]
+        exact = sum(d.quarters for d in fitted) <= target + durations.EPSILON
+    else:
+        fitted, exact = durations.fit_durations(
+            durations.proportions(beat_xs, x1, target), target, pinned=known_pins,
+            allow_tuplets=allow_tuplets, tuplet_indices=tuplet_indices)
     if not exact:
         total = sum(d.quarters for d in fitted)
         warn.add(index, "duration_mismatch",
@@ -727,7 +846,7 @@ def _build_measure(geo, system, bounds, index, tokens, warn,
             "lyric": lyrics.get(beat_x),
             "techniques": [
                 {"string": t["string"], "kind": t["kind"]} for t in techniques
-                if abs(t["x"] - beat_x) <= BEAT_CLUSTER_TOLERANCE
+                if not t["grace"] and abs(t["x"] - beat_x) <= BEAT_CLUSTER_TOLERANCE
             ] + [{"string": None, "kind": kind}
                  for kind in beat_articulations.get(position, ())],
             "notes": notes,
@@ -737,10 +856,32 @@ def _build_measure(geo, system, bounds, index, tokens, warn,
         pending=pending_row_chord)
     measure["pending_graces"] = _attach_graces(
         measure["beats"], grace_glyphs, system, index, warn,
-        pending=pending_graces)
+        pending=pending_graces, techniques=techniques)
+    if _voice is not None:
+        remaining = target - sum(d.quarters for d in fitted)
+        if remaining > durations.EPSILON:
+            try:
+                padding = durations.rest_durations(remaining)
+            except ValueError as exc:
+                warn.add(index, "duration_mismatch", str(exc))
+                padding = []
+            for duration in padding:
+                measure["beats"].append({
+                    "x": x1, "duration": duration.value, "dotted": duration.dotted,
+                    "tuplet": list(duration.tuplet) if duration.tuplet else None,
+                    "rest": True, "chord": None, "from_chord": False,
+                    "stroke": None, "lyric": None, "techniques": [], "notes": [],
+                })
+        for beat in measure["beats"]:
+            beat["voice"] = _voice
     # 경계 마디(픽업·불완전 종지) 재판정에 쓰는 임시 값 — extract_ir 가 걷어낸다
-    measure["_fit"] = {"beat_xs": beat_xs, "x1": x1, "rest_pins": rest_pins,
-                       "allow_tuplets": allow_tuplets}
+    measure["_fit"] = {
+        "beat_xs": beat_xs, "x1": x1, "pins": known_pins,
+        "allow_tuplets": allow_tuplets,
+        "tuplet_indices": tuplet_indices,
+        "full_measure_rest": (len(rest_glyphs) == 1 and not note_glyphs
+                              and smufl.name(rest_glyphs[0].char) == "restWhole"),
+    }
     return measure
 
 
@@ -769,13 +910,18 @@ def _refit_measure(measure: dict, numerator: int, denominator: int,
     target = durations.target_quarters(numerator, denominator)
     fitted, exact = durations.fit_durations(
         durations.proportions(fit["beat_xs"], fit["x1"], target), target,
-        pinned=fit["rest_pins"], allow_tuplets=fit["allow_tuplets"])
+        pinned=fit["pins"], allow_tuplets=fit["allow_tuplets"],
+        tuplet_indices=fit["tuplet_indices"])
     old = measure["time_sig"]
     measure["time_sig"] = [numerator, denominator]
     for beat, duration in zip(measure["beats"], fitted):
         beat["duration"] = duration.value
         beat["dotted"] = duration.dotted
         beat["tuplet"] = list(duration.tuplet) if duration.tuplet else None
+    # 확정 빔 때문에 원래 박자표와 어긋났던 경고도 새 박자표 기준으로 바꾼다.
+    warn.items[:] = [w for w in warn.items
+                     if not (w["measure"] == measure["index"]
+                             and w["kind"] == "duration_mismatch")]
     warn.add(measure["index"], "pickup_measure",
              f"{old[0]}/{old[1]} 보다 확실히 짧은 경계 마디 — 박자표를 "
              f"{numerator}/{denominator} 로 줄였다 (못갖춘마디로 판단)")
@@ -799,12 +945,22 @@ def _adjust_boundary_measures(measures: list[dict], warn: _Warnings) -> None:
         return                      # 스케일을 잴 안쪽 표본이 없다
     scales = sorted(
         _measure_span(m) / durations.target_quarters(*m["time_sig"])
-        for m in scored[1:-1] if _measure_span(m) > 0)
+        for m in scored[1:-1]
+        if not m["_fit"]["full_measure_rest"] and _measure_span(m) > 0)
     if not scales:
         return
     scale = scales[len(scales) // 2]
-    for measure in (scored[0], scored[-1]):
+    for measure in (measures[0], measures[-1]):
+        if "_fit" not in measure:
+            continue
+        fit = measure["_fit"]
+        if fit["full_measure_rest"]:
+            continue                 # 온쉼표는 가운데 놓여도 마디 전체다
         target = durations.target_quarters(*measure["time_sig"])
+        if (len(fit["pins"]) == len(measure["beats"])
+                and abs(sum(d.quarters for d in fit["pins"].values())
+                        - target) < durations.EPSILON):
+            continue                 # 확정 음가가 채운 마디를 폭으로 줄이지 않는다
         estimated = _measure_span(measure) / scale
         if estimated >= PICKUP_MAX_RATIO * target:
             continue

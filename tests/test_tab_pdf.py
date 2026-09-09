@@ -257,6 +257,9 @@ def test_techniques_land_on_the_right_string(tmp_path):
     techniques = [(m["index"], t)
                   for m in ir["measures"] for b in m["beats"]
                   for t in b.get("techniques", ()) if t["string"] is not None]
+    techniques += [(m["index"], {"string": n["string"], "kind": n["grace_transition"]})
+                   for m in ir["measures"] for b in m["beats"] for n in b["notes"]
+                   if n.get("grace_transition")]
     assert len(techniques) == 6, f"연주법 {len(techniques)}개"
     assert all(t["string"] == 2 for _, t in techniques), "전부 2번줄이어야 한다"
     kinds = sorted(t["kind"] for _, t in techniques)
@@ -267,9 +270,13 @@ def test_techniques_land_on_the_right_string(tmp_path):
     song = gp.parse(str(out), encoding="cp949")
     notes = [n for m in song.tracks[0].measures for v in m.voices
              for b in v.beats for n in b.notes]
-    assert sum(1 for n in notes if n.effect.hammer) == 4
-    assert sum(1 for n in notes if n.effect.slides) == 2
-    assert all(n.string == 2 for n in notes if n.effect.hammer or n.effect.slides)
+    assert sum(1 for n in notes if n.effect.hammer) == 3
+    assert sum(1 for n in notes if n.effect.slides) == 1
+    transitions = [n for n in notes if n.effect.grace and n.effect.grace.transition
+                   != gp.models.GraceEffectTransition.none]
+    assert len(transitions) == 2
+    assert all(n.string == 2 for n in notes
+               if n.effect.hammer or n.effect.slides or n in transitions)
 
 
 @needs_pdf

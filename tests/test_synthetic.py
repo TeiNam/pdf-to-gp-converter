@@ -51,7 +51,7 @@ def test_fit_finds_exact_solution_greedy_would_miss():
 def test_fit_reports_failure_instead_of_lying():
     """정확히 맞출 조합이 없으면 조용히 틀린 값을 주지 않고 False 를 돌려준다.
 
-    legal 최대가 4.0 이라 beat 1개로 5.0 을 만들 수는 없다.
+    5박짜리 단일 음가는 없으므로 beat 1개로 5.0 을 만들 수는 없다.
     """
     fitted, exact = durations.fit_durations([5.0], 5.0)
     assert not exact
@@ -309,8 +309,8 @@ def test_cli_rejects_missing_and_non_tab_pdf(tmp_path):
     ("G", "GMajor"),
     ("F#", "FMajorSharp"),
     ("Bb", "BMajorFlat"),
-    ("Am", "CMajor"),      # 단조는 나란한장조와 조표가 같다
-    ("Em", "GMajor"),
+    ("Am", "AMinor"),
+    ("Em", "EMinor"),
     ("", None),
     ("Xq", None),
 ])

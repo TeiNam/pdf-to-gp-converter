@@ -326,10 +326,13 @@ def write_gp5(song: Song, file_path: str) -> None:
     try:
         gp.write(song, tmp_path, version=GP5_VERSION, encoding=GP5_ENCODING)
         # mkstemp 는 0600 으로 만든다 — 그대로 두면 산출물이 사용자 전용이
-        # 된다. 일반 파일 생성과 같은 권한(umask 반영)으로 되돌린다.
-        current_umask = os.umask(0)
-        os.umask(current_umask)
-        os.chmod(tmp_path, 0o666 & ~current_umask)
+        # 된다. 덮어쓰기면 기존 파일의 권한을, 새 파일이면 관례(644)를 쓴다.
+        # umask 를 읽으려 os.umask 를 만지면 프로세스 전역 상태라 위험하다.
+        try:
+            mode = os.stat(file_path).st_mode & 0o777
+        except FileNotFoundError:
+            mode = 0o644
+        os.chmod(tmp_path, mode)
     except BaseException:
         with contextlib.suppress(OSError):
             os.remove(tmp_path)

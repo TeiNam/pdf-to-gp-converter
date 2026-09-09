@@ -763,6 +763,23 @@ def test_cli_refuses_output_colliding_with_ir(tmp_path):
     assert convert.main([pdf, "-o", same, "--ir", same]) == 2
 
 
+def test_write_gp5_permissions(tmp_path):
+    """새 파일은 644, 덮어쓰기는 기존 권한 보존 — mkstemp 0600 이 새면 안 된다."""
+    import os
+
+    ir = {"title": "t", "artist": "", "tempo": 80,
+          "tuning": [64, 59, 55, 50, 45, 40],
+          "measures": [{"index": 0, "time_sig": [4, 4], "kind": "empty",
+                        "beats": []}],
+          "warnings": []}
+    out = tmp_path / "perm.gp5"
+    build.write_gp5(build.build_song(ir), str(out))
+    assert os.stat(out).st_mode & 0o777 == 0o644
+    os.chmod(out, 0o600)
+    build.write_gp5(build.build_song(ir), str(out))
+    assert os.stat(out).st_mode & 0o777 == 0o600, "기존 권한이 보존되지 않았다"
+
+
 def test_write_gp5_is_atomic(tmp_path, monkeypatch):
     """쓰기 도중 실패해도 기존 파일이 잘리면 안 된다."""
     ir = {"title": "t", "artist": "", "tempo": 80,

@@ -142,6 +142,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--tempo", type=int, help="곡 템포 (기본 80)")
     parser.add_argument("--title", help="곡 제목 (기본: PDF 파일명)")
     parser.add_argument("--artist", help="아티스트")
+    parser.add_argument("--tuning", metavar="NOTES",
+                        help="대체 튜닝, 저음→고음 (예: DADGBE, 'Eb Ab Db Gb Bb Eb')")
+    parser.add_argument("--capo", type=int,
+                        help="카포 프렛 (기본: 머리글의 Capo 표기, 없으면 0)")
     parser.add_argument("--open", action="store_true",
                         dest="open_app", help=f"저장 후 {GUITAR_PRO_APP} 로 열기")
     parser.add_argument("--lyrics", choices=build.LYRIC_MODES,
@@ -160,6 +164,16 @@ def main(argv: list[str] | None = None) -> int:
     if args.ai_limit is not None and args.ai_limit < 1:
         parser.error("--ai-limit 은 1 이상이어야 합니다")
 
+    if args.capo is not None and not 0 <= args.capo <= 12:
+        parser.error("--capo 는 0..12 여야 합니다")
+    tuning = None
+    if args.tuning:
+        try:
+            tuning = extract.parse_tuning(args.tuning)
+        except ValueError as exc:
+            print(f"오류: {exc}", file=sys.stderr)
+            return 2
+
     problem = _validate(args)
     if problem:
         print(f"오류: {problem}", file=sys.stderr)
@@ -167,7 +181,8 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         ir = extract.extract_ir(args.pdf, tempo=args.tempo,
-                                title=args.title, artist=args.artist)
+                                title=args.title, artist=args.artist,
+                                tuning=tuning, capo=args.capo)
     except extract.NotATabPdf as exc:
         print(f"오류: {exc}", file=sys.stderr)
         return 2

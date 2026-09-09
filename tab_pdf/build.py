@@ -232,6 +232,7 @@ def build_song(ir: dict, *, lyric_mode: str = DEFAULT_LYRIC_MODE) -> Song:
 
     track = Track(song, name="Guitar")
     track.channel.instrument = NYLON_GUITAR_MIDI_PROGRAM
+    track.offset = ir.get("capo", 0)        # GP5 의 카포 필드
     track.strings = [GuitarString(i + 1, value)
                      for i, value in enumerate(ir["tuning"])]
     track.measures.clear()

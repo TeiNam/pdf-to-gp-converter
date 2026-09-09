@@ -1,6 +1,7 @@
 """PDF 기하를 음악적 중간표현(IR)으로 해석한다."""
 
 import os
+import re
 from dataclasses import dataclass, field
 
 import pymupdf
@@ -85,6 +86,10 @@ HEADER_LABELS = {
     "연주": "performer",
 }
 KEY_LABEL = "Key:"
+# 머리글의 카포 표기 — 글리프 스트림에 공백이 없어 'Capo3'·'카포:3' 형태다
+CAPO_PATTERN = re.compile(r"(?i)(?:capo|카포)\D{0,3}(\d{1,2})")
+# 튜닝 문자열의 음 이름 하나 (Eb·F# 지원)
+TUNING_NOTE = re.compile(r"[A-Ga-g][#b♯♭]?")
 # 조성 표기가 붙는 리듬·연주 지시 줄을 알아보는 낱말. 라벨이 없는 자유 문구라
 # 내용으로 판정한다 — 'Slow 16Beat', '16 Beat', 'Shuffle' 따위.
 RHYTHM_WORDS = ("beat", "shuffle", "swing", "slow", "waltz", "ballad", "bounce")
@@ -129,6 +134,27 @@ SMUFL_STROKE_UP = ""
 
 class NotATabPdf(ValueError):
     """타브 악보로 해석할 수 없는 입력."""
+
+
+def parse_tuning(text: str) -> list[int]:
+    """'DADGBE'·'Eb Ab Db Gb Bb Eb' 같은 저음→고음 표기를 MIDI 목록으로.
+
+    옥타브 표기가 없으므로 각 줄을 표준 튜닝의 그 줄에서 가장 가까운
+    옥타브로 푼다 — Drop-D·반음 내림 같은 실제 대체 튜닝을 전부 덮는다.
+    돌려주는 순서는 IR 관례대로 1번줄(고음)부터다.
+    """
+    names = TUNING_NOTE.findall(text)
+    if len(names) != len(STANDARD_TUNING):
+        raise ValueError(
+            f"튜닝은 저음→고음 6개 음 이름이어야 합니다 (예: DADGBE): {text!r}")
+    result = []
+    for name, standard in zip(reversed(names), STANDARD_TUNING):
+        pitch_class = chords._note_value(name.upper()[0] + name[1:])
+        if pitch_class is None:
+            raise ValueError(f"음 이름을 해석할 수 없습니다: {name!r}")
+        candidates = range(pitch_class, 128, chords.SEMITONES)
+        result.append(min(candidates, key=lambda value: abs(value - standard)))
+    return result
 
 
 @dataclass
@@ -921,6 +947,9 @@ def _header_fields(geo, system) -> dict[str, str]:
                 fields.setdefault(key, text[len(label):].strip())
                 break
         else:
+            capo = CAPO_PATTERN.search(text)
+            if capo is not None:
+                fields.setdefault("capo", capo.group(1))
             if text.startswith(KEY_LABEL):
                 fields.setdefault("key", text[len(KEY_LABEL):].strip())
             elif any(word in text.lower() for word in RHYTHM_WORDS):
@@ -929,7 +958,9 @@ def _header_fields(geo, system) -> dict[str, str]:
 
 
 def extract_ir(pdf_path: str, tempo: int | None = None,
-               title: str | None = None, artist: str | None = None) -> dict:
+               title: str | None = None, artist: str | None = None,
+               tuning: list[int] | None = None,
+               capo: int | None = None) -> dict:
     """PDF 전체를 IR 로 만든다.
 
     제목은 PDF 메타데이터를 쓰지 않는다 — 대상 PDF 의 메타 제목은 mojibake 된
@@ -1006,7 +1037,9 @@ def extract_ir(pdf_path: str, tempo: int | None = None,
                     if key in ("words", "music", "arranger", "performer")},
         "key": header.get("key", ""),
         "rhythm": header.get("rhythm", ""),
-        "tuning": list(STANDARD_TUNING),
+        "tuning": list(tuning) if tuning else list(STANDARD_TUNING),
+        # CLI 인자가 머리글 표기('Capo 3')를 이긴다
+        "capo": capo if capo is not None else int(header.get("capo", 0)),
         "measures": measures,
         "warnings": warn.items,
     }

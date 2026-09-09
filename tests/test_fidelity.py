@@ -86,6 +86,61 @@ def test_real_pdf_x_noteheads_become_dead_notes():
     assert len(dead) == 8
 
 
+# ── #8 대체 튜닝·카포 ────────────────────────────────────────────────────────
+
+def test_parse_tuning_drop_d_and_half_step_down():
+    """저음→고음 표기를 받아 표준 튜닝에 가장 가까운 옥타브로 푼다."""
+    assert extract.parse_tuning("DADGBE") == [64, 59, 55, 50, 45, 38]
+    assert extract.parse_tuning("Eb Ab Db Gb Bb Eb") == [63, 58, 54, 49, 44, 39]
+
+
+def test_parse_tuning_rejects_garbage():
+    with pytest.raises(ValueError):
+        extract.parse_tuning("XYZ")
+    with pytest.raises(ValueError):
+        extract.parse_tuning("EADG")           # 4현 — 6현이 아니다
+
+
+def test_header_capo_is_detected():
+    glyphs = [_glyph(60.0 + i * 6.0, 60.0, char) for i, char in enumerate("Capo3")]
+    geo = geometry.PageGeometry(glyphs=glyphs)
+    fields = extract._header_fields(geo, SYSTEM)
+    assert fields.get("capo") == "3"
+
+
+def test_capo_and_tuning_reach_gp5(tmp_path):
+    ir = {
+        "title": "t", "artist": "", "tempo": 80, "capo": 2,
+        "tuning": [64, 59, 55, 50, 45, 38],
+        "measures": [{
+            "index": 0, "time_sig": [4, 4], "kind": "fret", "beats": [
+                {"x": 0, "duration": 1, "dotted": False, "chord": None,
+                 "from_chord": False, "stroke": None, "lyric": None,
+                 "techniques": [], "notes": [{"string": 6, "fret": 0}]}]}],
+        "warnings": [],
+    }
+    out = tmp_path / "capo.gp5"
+    build.write_gp5(build.build_song(ir), str(out))
+    track = gp.parse(str(out), encoding="cp949").tracks[0]
+    assert track.offset == 2
+    assert [s.value for s in track.strings] == [64, 59, 55, 50, 45, 38]
+
+
+def test_cli_tuning_and_capo_flags(tmp_path):
+    import convert
+
+    pdf = _score_pdf(tmp_path / "syn.pdf", barlines=[240.0, 440.0],
+                     note_xs=[50.0, 100.0, 150.0, 200.0,
+                              250.0, 300.0, 350.0, 400.0])
+    out = tmp_path / "syn.gp5"
+    code = convert.main([pdf, "-o", str(out), "--tuning", "DADGBE", "--capo", "2"])
+    assert code == 0
+    track = gp.parse(str(out), encoding="cp949").tracks[0]
+    assert track.offset == 2
+    assert [s.value for s in track.strings] == [64, 59, 55, 50, 45, 38]
+    assert convert.main([pdf, "-o", str(out), "--tuning", "broken"]) == 2
+
+
 # ── #2 타브 쉼표는 rest beat 이 되어야 한다 ──────────────────────────────────
 
 REST_QUARTER = chr(0xE4E5)      # restQuarter

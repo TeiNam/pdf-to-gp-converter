@@ -58,6 +58,13 @@ def _validate(args) -> str | None:
     """사용자 입력을 검증한다. 문제가 있으면 메시지를 돌려준다."""
     if not os.path.isfile(args.pdf):
         return f"PDF 파일이 없습니다: {args.pdf}"
+    if args.output is not None:
+        if os.path.abspath(args.output) == os.path.abspath(args.pdf):
+            # 산출물이 입력 PDF 를 덮어쓰면 원본이 사라진다
+            return f"-o 가 입력 PDF 와 같습니다: {args.output}"
+        if (args.ir is not None
+                and os.path.abspath(args.output) == os.path.abspath(args.ir)):
+            return f"-o 와 --ir 가 같은 파일입니다: {args.output}"
     if args.ir is None:
         return None
     if not args.ir.lower().endswith(IR_SUFFIX):

@@ -86,6 +86,52 @@ def test_real_pdf_x_noteheads_become_dead_notes():
     assert len(dead) == 8
 
 
+# ── #13 출력 경로 충돌·원자적 쓰기 ───────────────────────────────────────────
+
+def test_cli_refuses_output_over_input_pdf(tmp_path):
+    """-o 가 입력 PDF 를 가리키면 원본이 지워진다 — 거부해야 한다."""
+    import convert
+
+    pdf = _score_pdf(tmp_path / "syn.pdf", barlines=[240.0],
+                     note_xs=[50.0, 100.0, 150.0, 200.0])
+    before = pathlib.Path(pdf).read_bytes()
+    assert convert.main([pdf, "-o", pdf]) == 2
+    assert pathlib.Path(pdf).read_bytes() == before
+
+
+def test_cli_refuses_output_colliding_with_ir(tmp_path):
+    import convert
+
+    pdf = _score_pdf(tmp_path / "syn.pdf", barlines=[240.0],
+                     note_xs=[50.0, 100.0, 150.0, 200.0])
+    same = str(tmp_path / "one.json")
+    assert convert.main([pdf, "-o", same, "--ir", same]) == 2
+
+
+def test_write_gp5_is_atomic(tmp_path, monkeypatch):
+    """쓰기 도중 실패해도 기존 파일이 잘리면 안 된다."""
+    ir = {"title": "t", "artist": "", "tempo": 80,
+          "tuning": [64, 59, 55, 50, 45, 40],
+          "measures": [{"index": 0, "time_sig": [4, 4], "kind": "empty",
+                        "beats": []}],
+          "warnings": []}
+    out = tmp_path / "song.gp5"
+    build.write_gp5(build.build_song(ir), str(out))
+    good = out.read_bytes()
+
+    def boom(song, path, **kwargs):
+        # 절반 쓰다 죽는 직렬화 — 대상 경로를 먼저 훼손해 본다
+        with open(path, "wb") as handle:
+            handle.write(b"partial")
+        raise RuntimeError("직렬화 실패")
+
+    monkeypatch.setattr(build.gp, "write", boom)
+    with pytest.raises(RuntimeError):
+        build.write_gp5(build.build_song(ir), str(out))
+    assert out.read_bytes() == good, "실패한 쓰기가 기존 파일을 훼손했다"
+    assert not list(tmp_path.glob("*.tmp")), "임시 파일이 남았다"
+
+
 # ── #8 대체 튜닝·카포 ────────────────────────────────────────────────────────
 
 def test_parse_tuning_drop_d_and_half_step_down():

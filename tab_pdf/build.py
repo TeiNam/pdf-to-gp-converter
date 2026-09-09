@@ -1,5 +1,8 @@
 """IR → pyguitarpro Song. PDF 를 전혀 모른다."""
 
+import contextlib
+import os
+
 import guitarpro as gp
 from guitarpro.models import (
     Beat, BeatStatus, BeatStrokeDirection, BendEffect, BendPoint, BendType,
@@ -293,5 +296,16 @@ def build_song(ir: dict, *, lyric_mode: str = DEFAULT_LYRIC_MODE) -> Song:
 
 
 def write_gp5(song: Song, file_path: str) -> None:
-    """.gp5 로 쓴다. 인코딩은 고정 — 한글 제목이 깨지면 안 된다."""
-    gp.write(song, file_path, version=GP5_VERSION, encoding=GP5_ENCODING)
+    """.gp5 로 쓴다. 인코딩은 고정 — 한글 제목이 깨지면 안 된다.
+
+    임시 파일에 다 쓴 뒤 바꿔치기한다 — 직렬화가 도중에 실패해도
+    같은 경로의 기존 파일이 잘리지 않는다.
+    """
+    tmp_path = f"{file_path}.tmp"
+    try:
+        gp.write(song, tmp_path, version=GP5_VERSION, encoding=GP5_ENCODING)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.remove(tmp_path)
+        raise
+    os.replace(tmp_path, file_path)

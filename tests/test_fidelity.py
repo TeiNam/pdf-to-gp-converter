@@ -514,6 +514,48 @@ def test_repeat_rightleft_closes_previous_and_opens_current(tmp_path):
     assert measures[1].get("repeat_close") is None
 
 
+# ── 3라운드 보완 ─────────────────────────────────────────────────────────────
+
+def test_far_dot_does_not_make_a_rest_dotted():
+    """다른 줄·다른 마디의 붙임점이 쉼표를 점쉼표로 만들면 안 된다."""
+    glyphs = [
+        _glyph(60.0, SYSTEM.tab_ys[2], "0"),
+        _glyph(150.0, SYSTEM.tab_ys[2], "0"),
+        _glyph(230.0, SYSTEM.tab_ys[3], REST_QUARTER),
+        # 붙임점이 x 로는 가깝지만 1번줄(다른 세로 위치)의 점음표 것이다
+        geometry.Glyph(x=238.0, y=SYSTEM.tab_ys[0], x_end=240.0,
+                       char=chr(0xE1E7), font="f", size=9.3),
+    ]
+    measure, _ = _measure_from(glyphs)
+    rest_beat = measure["beats"][2]
+    assert rest_beat["dotted"] is False, "남의 붙임점이 쉼표에 붙었다"
+
+
+def test_rest_only_measure_carries_pending_chord_forward():
+    """소리 나는 beat 이 없는 마디는 이월 코드를 삼키지 말고 넘겨야 한다."""
+    glyphs = [_glyph(200.0, SYSTEM.tab_ys[3], REST_QUARTER)]
+    geo = geometry.PageGeometry(glyphs=glyphs)
+    warn = extract._Warnings()
+    measure = extract._build_measure(
+        geo, SYSTEM, BOUNDS, 0, [], warn, (4, 4),
+        extract.build_letter_index(geo), [], pending_row_chord="Am")
+    assert measure.pop("pending_row_chord") == "Am", "이월 코드가 사라졌다"
+
+
+def test_extra_verse_start_is_its_first_syllable_measure(tmp_path, monkeypatch):
+    """시스템 중간에서 시작하는 2절은 그 마디에서 시작해야 한다."""
+    pdf = _score_pdf(tmp_path / "verse.pdf", barlines=[240.0, 440.0],
+                     note_xs=[50.0, 100.0, 150.0, 200.0,
+                              250.0, 300.0, 350.0, 400.0])
+    monkeypatch.setattr(
+        extract, "_lyric_syllables",
+        lambda geo, system, index, warn: (
+            [(50.0, "가"), (250.0, "나")],
+            [[(260.0, "다"), (300.0, "라")]]))     # 2절은 두 번째 마디부터
+    ir = extract.extract_ir(pdf, title="verse")
+    assert ir["extra_lyric_rows"] == [{"start": 1, "text": "다 라"}]
+
+
 # ── #19 진행 지시 단어는 코드가 아니다 ───────────────────────────────────────
 
 def test_progression_words_are_not_chords():

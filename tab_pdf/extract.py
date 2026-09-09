@@ -31,6 +31,8 @@ MAX_FRET_GLYPH_SIZE = 11.0
 GRACE_SIZE_MIN_DELTA = 1.0
 # 쉼표 오른쪽 이 거리 안의 붙임점은 그 쉼표의 것이다 (pt)
 REST_DOT_WINDOW = 10.0
+# 붙임점이 그 쉼표의 것이라고 볼 세로 거리 (pt) — 다른 줄의 점음표 점과 가른다
+REST_DOT_Y_TOLERANCE = 4.0
 # 셋잇단 숫자 '3' — 이 글리프가 타브 대역에 있는 마디만 셋잇단 후보를 연다
 TUPLET_3 = chr(0xE883)
 # 같은 beat(화음)로 묶을 x 허용 오차 (pt)
@@ -554,8 +556,12 @@ def _assign_row_chords(beats: list[dict], tokens, bounds, index, warn, tuning,
             leftover = name
             continue
         _set_row_chord(target, name, index, warn, tuning)
-    if pending is not None and sounding and sounding[0].get("chord") is None:
-        _set_row_chord(sounding[0], pending, index, warn, tuning)
+    if pending is not None:
+        if sounding and sounding[0].get("chord") is None:
+            _set_row_chord(sounding[0], pending, index, warn, tuning)
+        elif not sounding and leftover is None:
+            # 쉼표뿐인 마디 — 이월분을 삼키지 말고 다음 마디로 계속 넘긴다
+            leftover = pending
     return leftover
 
 
@@ -595,11 +601,15 @@ def _build_measure(geo, system, bounds, index, tokens, warn,
         legal = REST_DURATIONS.get(smufl.name(rest_glyph.char) or "")
         if legal is not None:
             # 쉼표 오른쪽의 붙임점 — 점4분쉼표를 4분으로 고정하면 남는
-            # 반박이 이웃 beat 에 잘못 재배분된다
+            # 반박이 이웃 beat 에 잘못 재배분된다. 같은 마디 안, 비슷한
+            # 높이의 점만 받는다 — 다른 줄 점음표의 점·다음 마디의 점이
+            # 남의 쉼표를 점쉼표로 만들면 안 된다
             has_dot = any(
                 smufl.name(g.char) == "augmentationDot"
                 and 0 < g.x - rest_glyph.x <= REST_DOT_WINDOW
-                and _in_tab_band(g, system) for g in geo.glyphs)
+                and g.x < x1
+                and abs(g.y - rest_glyph.y) <= REST_DOT_Y_TOLERANCE
+                for g in geo.glyphs)
             if has_dot:
                 legal = durations.LegalDuration(
                     legal.value, True, legal.quarters * 1.5)
@@ -857,9 +867,17 @@ def extract_ir(pdf_path: str, tempo: int | None = None,
                 syllables, extra_rows = _lyric_syllables(
                     geo, system, len(measures), warn)
                 for row_index, row in enumerate(extra_rows):
-                    entry = extra_lyric_rows.setdefault(
-                        row_index, {"start": len(measures), "chars": []})
-                    entry["chars"].extend(char for _, char in row)
+                    if row_index not in extra_lyric_rows:
+                        # 절의 시작은 첫 음절이 놓인 마디다 — 시스템 첫
+                        # 마디로 뭉뚱그리면 GP 가 절을 앞당겨 분배한다
+                        first_x = row[0][0]
+                        offset = next(
+                            (i for i, (a, b) in enumerate(all_bounds)
+                             if a <= first_x < b), 0)
+                        extra_lyric_rows[row_index] = {
+                            "start": len(measures) + offset, "chars": []}
+                    extra_lyric_rows[row_index]["chars"].extend(
+                        char for _, char in row)
                 for bounds in all_bounds:
                     # 박자표는 표기된 마디부터 적용된다 — 시스템 첫 마디로
                     # 소급하면 중간 박자 변경이 앞 마디를 망가뜨린다

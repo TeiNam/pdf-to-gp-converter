@@ -822,10 +822,10 @@ def _build_measure(geo, system, bounds, index, tokens, warn,
                    pending_row_chord: str | None = None,
                    pending_graces: list | None = None) -> dict:
     x0, x1 = bounds
-    fret_glyphs = _merge_two_digit_frets(
-        _fret_glyphs(geo, system, x0, x1, letter_index), system, index, warn)
-    grace_glyphs = _merge_two_digit_frets(
-        _grace_glyphs(geo, system, x0, x1, letter_index), system, index, warn)
+    raw_fret_glyphs = _fret_glyphs(geo, system, x0, x1, letter_index)
+    fret_glyphs = _merge_two_digit_frets(raw_fret_glyphs, system, index, warn)
+    raw_grace_glyphs = _grace_glyphs(geo, system, x0, x1, letter_index)
+    grace_glyphs = _merge_two_digit_frets(raw_grace_glyphs, system, index, warn)
     dead_glyphs = _dead_glyphs(geo, system, x0, x1)
     rest_glyphs = _rest_glyphs(geo, system, x0, x1)
     slash_xs = _slash_xs(geo, system, x0, x1)
@@ -859,9 +859,11 @@ def _build_measure(geo, system, bounds, index, tokens, warn,
         lyric_xs, [(x, c) for x, c in syllables if x0 <= x < x1], index, warn)
     measure = {
         "index": index, "time_sig": list(time_sig), "kind": kind, "beats": [],
+        # 병합 전 원본 숫자와 꾸밈음도 걷어낸다 — 남기면 AI 의 unread 목록에
+        # 이미 반영된 글리프가 섞여 중복 제안을 부른다
         "glyphs": _annotation_glyphs(
             geo, system, bounds, beat_xs,
-            fret_glyphs + dead_glyphs + rest_glyphs
+            raw_fret_glyphs + raw_grace_glyphs + dead_glyphs + rest_glyphs
             + [glyph for glyph, _ in articulations]),
         # 추출기가 코드 행에서 이미 조립해 읽은 이름. AI 가 낱글자를 다시 조립하면
         # 'Cadd9' 를 'C' 로 끊는 오독이 생긴다 — 읽은 결과를 그대로 넘긴다.

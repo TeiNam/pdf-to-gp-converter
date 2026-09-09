@@ -113,6 +113,7 @@ NAMES: dict[int, str] = {
     0xE610: "stringsDownBow",           # 타브에서는 다운스트로크
     0xE612: "stringsUpBow",             # 타브에서는 업스트로크
     0xE614: "stringsHarmonic",
+    0xE883: "tuplet3",                  # 셋잇단 숫자 '3'
 }
 
 

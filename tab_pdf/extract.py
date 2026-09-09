@@ -25,9 +25,14 @@ DEFAULT_TIME_SIG = (4, 4)
 
 # 프렛 숫자로 인정할 글리프 크기 상한 (pt). 'T','A','B' 세로 라벨은 14.4pt 로 더 크다
 MAX_FRET_GLYPH_SIZE = 11.0
-# 이 크기 이하의 프렛 숫자는 꾸밈음이다 (실측: 정규 9.3pt, 꾸밈음 8.0pt).
-# 정식 beat 으로 세우면 리듬이 왜곡된다 — 다음 음의 grace 로 붙인다.
-GRACE_FRET_GLYPH_SIZE = 8.5
+# 꾸밈음/정규 프렛을 가를 크기 차 하한 (pt). 시스템의 숫자 크기가 이보다
+# 좁게 모여 있으면 꾸밈음이 없는 것이다 — 절대 문턱을 쓰면 정규 프렛이
+# 8pt 인 악보의 모든 음이 꾸밈음으로 오인된다 (실측: 정규 9.3, 꾸밈음 8.0)
+GRACE_SIZE_MIN_DELTA = 1.0
+# 쉼표 오른쪽 이 거리 안의 붙임점은 그 쉼표의 것이다 (pt)
+REST_DOT_WINDOW = 10.0
+# 셋잇단 숫자 '3' — 이 글리프가 타브 대역에 있는 마디만 셋잇단 후보를 연다
+TUPLET_3 = chr(0xE883)
 # 같은 beat(화음)로 묶을 x 허용 오차 (pt)
 BEAT_CLUSTER_TOLERANCE = 2.0
 # 코드명 문자를 한 토큰으로 이을 간격 상한 (pt). 직전 문자의 잉크 끝 기준.
@@ -139,20 +144,40 @@ def _has_adjacent_letter(letter_index, glyph: geometry.Glyph) -> bool:
     return False
 
 
-def _fret_glyphs(geo, system, x0, x1, letter_index) -> list[geometry.Glyph]:
+def _grace_cutoff(geo, system, letter_index) -> float | None:
+    """이 시스템의 숫자 크기 분포에서 꾸밈음 문턱을 정한다. 없으면 None.
+
+    꾸밈음은 정규 프렛보다 작게 조판된다 — 크기가 두 무리로 갈릴 때만
+    작은 쪽을 꾸밈음으로 본다. 크기가 한 종류면 전부 정규다.
+    """
+    sizes = sorted({round(g.size, 1) for g in geo.glyphs
+                    if g.char.isdigit() and g.size <= MAX_FRET_GLYPH_SIZE
+                    and _in_tab_band(g, system)
+                    and not _has_adjacent_letter(letter_index, g)})
+    if len(sizes) < 2 or sizes[-1] - sizes[0] < GRACE_SIZE_MIN_DELTA:
+        return None
+    return (sizes[0] + sizes[-1]) / 2
+
+
+def _fret_glyphs(geo, system, x0, x1, letter_index,
+                 grace_cutoff: float | None) -> list[geometry.Glyph]:
     """폰트 이름에 의존하지 않는다 — 숫자 + 타브 대역 + 크기 범위 + 텍스트 배제."""
     return [g for g in geo.glyphs
             if x0 <= g.x < x1 and g.char.isdigit()
-            and GRACE_FRET_GLYPH_SIZE < g.size <= MAX_FRET_GLYPH_SIZE
+            and g.size <= MAX_FRET_GLYPH_SIZE
+            and (grace_cutoff is None or g.size > grace_cutoff)
             and _in_tab_band(g, system)
             and not _has_adjacent_letter(letter_index, g)]
 
 
-def _grace_glyphs(geo, system, x0, x1, letter_index) -> list[geometry.Glyph]:
+def _grace_glyphs(geo, system, x0, x1, letter_index,
+                  grace_cutoff: float | None) -> list[geometry.Glyph]:
     """꾸밈음 프렛 숫자 — 정규보다 작게 조판된다."""
+    if grace_cutoff is None:
+        return []
     return [g for g in geo.glyphs
             if x0 <= g.x < x1 and g.char.isdigit()
-            and g.size <= GRACE_FRET_GLYPH_SIZE and _in_tab_band(g, system)
+            and g.size <= grace_cutoff and _in_tab_band(g, system)
             and not _has_adjacent_letter(letter_index, g)]
 
 
@@ -227,6 +252,24 @@ def _rest_glyphs(geo, system, x0, x1) -> list[geometry.Glyph]:
 CHORD_ROW_TOLERANCE = 5.0
 
 
+def _chord_char(glyph: geometry.Glyph) -> str | None:
+    """코드명 문자로서의 글리프. 음악 기호는 ASCII 로 눕히고 나머지는 버린다.
+
+    - SMuFL 임시표(E260/E262)를 통째로 버리면 'C♯m' 이 'Cm' 으로 오독된다
+    - 리터럴 ♯/♭ 는 cp949 에 없어 GP5 직렬화가 UnicodeEncodeError 로 죽는다
+    - 세뇨·코다 같은 그 외 사설 영역 기호는 행 병합에 끼면 이웃 코드명을
+      삼켜 토큰 전체가 판정 탈락한다 (실측 3건) — 제외
+    """
+    name = smufl.name(glyph.char)
+    if name == "accidentalSharp":
+        return "#"
+    if name == "accidentalFlat":
+        return "b"
+    if _in_range(glyph.char, PRIVATE_USE_RANGE):
+        return None
+    return {"♯": "#", "♭": "b"}.get(glyph.char, glyph.char)
+
+
 def _chord_tokens(geo, system, x_limit: float) -> list[tuple[float, str]]:
     """이 시스템의 코드 행에서 (x, 코드명) 을 복원한다.
 
@@ -236,11 +279,9 @@ def _chord_tokens(geo, system, x_limit: float) -> list[tuple[float, str]]:
     성질이 루트에서 떨어져 나가 'C7' 이 'C' 로 읽힌다.
     """
     top = system.melody_ys[0]
-    # 음악 기호(사설 영역)는 코드명의 일부가 될 수 없다 — 세뇨·코다가 행
-    # 병합에 끼면 이웃 코드명을 삼켜 토큰 전체가 판정 탈락한다 (실측 3건)
     band = sorted((g for g in geo.glyphs
                    if top - CHORD_BAND_HEIGHT <= g.y < top and g.x < x_limit
-                   and not _in_range(g.char, PRIVATE_USE_RANGE)),
+                   and _chord_char(g) is not None),
                   key=lambda g: (g.y, g.x))
     rows: list[list[geometry.Glyph]] = []
     for glyph in band:
@@ -258,7 +299,7 @@ def _chord_tokens(geo, system, x_limit: float) -> list[tuple[float, str]]:
                 text = ""
             if not text:
                 start_x = glyph.x
-            text += glyph.char
+            text += _chord_char(glyph)
             prev_end = glyph.x_end
         if text:
             tokens.append((start_x, text))
@@ -401,6 +442,7 @@ _UNSUPPORTED_TAB_RANGES: tuple[tuple[tuple[int, int], str], ...] = (
     (smufl.ARTICULATION, "아티큘레이션"),
     (smufl.ORNAMENT, "장식음"),
     (smufl.TREMOLO, "트레몰로"),
+    (smufl.TUPLET, "잇단음표"),         # '3' 은 반영, 5잇단 등은 경고
 )
 
 
@@ -423,8 +465,9 @@ def _warn_unsupported(geo, system, x0, x1, index, warn) -> None:
             continue
         if _in_tab_band(glyph, system):
             name = smufl.name(glyph.char)
-            if name in ARTICULATION_KINDS or name in REST_NAMES:
-                continue                # _articulations·_rest_glyphs 가 반영한다
+            if (name in ARTICULATION_KINDS or name in REST_NAMES
+                    or glyph.char == TUPLET_3):
+                continue                # 이미 반영되는 표기다
             for bounds_range, label in _UNSUPPORTED_TAB_RANGES:
                 if _in_range(glyph.char, bounds_range):
                     counts[label] = counts.get(label, 0) + 1
@@ -466,9 +509,9 @@ def _beat_notes(fret_glyphs, dead_glyphs, beat_x, system, index, warn) -> list[d
 
 
 
-def _set_row_chord(beat: dict, name: str, index: int, warn) -> None:
+def _set_row_chord(beat: dict, name: str, index: int, warn, tuning) -> None:
     beat["chord"] = name
-    if chords.voicing_for(name) is None:
+    if chords.voicing_for(name, tuning) is None:
         # 다이어그램은 보이싱이 있어야 만들어진다 — 조용히 사라지지 않게
         # 남긴다. AI 보정(voicing)이 채우면 build 가 그때 그린다.
         warn.add(index, "chord_no_voicing",
@@ -476,33 +519,43 @@ def _set_row_chord(beat: dict, name: str, index: int, warn) -> None:
                  f"— .gp5 에 이 코드 표기가 보이지 않는다")
 
 
-def _assign_row_chords(beats: list[dict], tokens, bounds, index, warn,
+def _assign_row_chords(beats: list[dict], tokens, bounds, index, warn, tuning,
                        pending: str | None = None) -> str | None:
     """코드 행 토큰을 표기 위치의 beat 에 배정한다. 이월분을 돌려준다.
 
     슬래시 beat 은 from_chord 경로가 이미 이름을 갖는다. 프렛 beat 은 음은
     정확한데 코드 표기가 .gp5 에 전혀 남지 않았다 (실측 47개 토큰 소실) —
-    표기 x 이후 첫 미배정 beat 에 이름만 붙인다. 음은 건드리지 않는다.
+    표기 위치의 첫 beat 이 **같은 이름을 이미 갖고 있으면 그 토큰은 표현된
+    것**이다 (뒤 beat 으로 흘려보내면 코드가 밀린다). 아니면 표기 x 이후 첫
+    미배정 beat 에 이름만 붙인다. 음은 건드리지 않는다.
 
     이 악보의 조판은 마디 마지막 코드를 모든 beat 보다 뒤(마디선 직전)에
     표기해 **다음 마디 첫 beat** 을 선행 지시한다 (실측: Cadd9 가 마지막
     beat 보다 9~12pt 뒤). 그런 토큰은 버리지 않고 다음 마디로 넘긴다.
+    이월분은 자기 토큰이 배정된 뒤에 보고, 첫 beat 이 이미 표기를 가졌으면
+    낡은 선행 표기로 보고 버린다.
     """
     sounding = [b for b in beats if not b.get("rest")]
-    if pending is not None and sounding and sounding[0].get("chord") is None:
-        _set_row_chord(sounding[0], pending, index, warn)
     leftover = None
     x0, x1 = bounds
     for token_x, name in tokens:
         if not (x0 <= token_x < x1):
             continue
-        target = next((b for b in sounding
-                       if b["x"] >= token_x - CHORD_APPLY_SLACK
-                       and b.get("chord") is None), None)
-        if target is None:
+        anchor = next((i for i, b in enumerate(sounding)
+                       if b["x"] >= token_x - CHORD_APPLY_SLACK), None)
+        if anchor is None:
             leftover = name         # 마디 끝 선행 표기 — 다음 마디 몫이다
             continue
-        _set_row_chord(target, name, index, warn)
+        if sounding[anchor].get("chord") == name:
+            continue                # 슬래시 경로가 이미 이 자리에서 표현했다
+        target = next((b for b in sounding[anchor:]
+                       if b.get("chord") is None), None)
+        if target is None:
+            leftover = name
+            continue
+        _set_row_chord(target, name, index, warn, tuning)
+    if pending is not None and sounding and sounding[0].get("chord") is None:
+        _set_row_chord(sounding[0], pending, index, warn, tuning)
     return leftover
 
 
@@ -511,11 +564,15 @@ def _build_measure(geo, system, bounds, index, tokens, warn,
                    syllables: list[tuple[float, str]],
                    carried_chord: str | None = None,
                    pending_row_chord: str | None = None,
-                   pending_graces: list | None = None) -> dict:
+                   pending_graces: list | None = None,
+                   tuning: tuple[int, ...] = STANDARD_TUNING) -> dict:
     x0, x1 = bounds
-    raw_fret_glyphs = _fret_glyphs(geo, system, x0, x1, letter_index)
+    grace_cutoff = _grace_cutoff(geo, system, letter_index)
+    raw_fret_glyphs = _fret_glyphs(geo, system, x0, x1, letter_index,
+                                   grace_cutoff)
     fret_glyphs = _merge_two_digit_frets(raw_fret_glyphs, system, index, warn)
-    raw_grace_glyphs = _grace_glyphs(geo, system, x0, x1, letter_index)
+    raw_grace_glyphs = _grace_glyphs(geo, system, x0, x1, letter_index,
+                                     grace_cutoff)
     grace_glyphs = _merge_two_digit_frets(raw_grace_glyphs, system, index, warn)
     dead_glyphs = _dead_glyphs(geo, system, x0, x1)
     rest_glyphs = _rest_glyphs(geo, system, x0, x1)
@@ -537,6 +594,15 @@ def _build_measure(geo, system, bounds, index, tokens, warn,
         rest_positions.add(position)
         legal = REST_DURATIONS.get(smufl.name(rest_glyph.char) or "")
         if legal is not None:
+            # 쉼표 오른쪽의 붙임점 — 점4분쉼표를 4분으로 고정하면 남는
+            # 반박이 이웃 beat 에 잘못 재배분된다
+            has_dot = any(
+                smufl.name(g.char) == "augmentationDot"
+                and 0 < g.x - rest_glyph.x <= REST_DOT_WINDOW
+                and _in_tab_band(g, system) for g in geo.glyphs)
+            if has_dot:
+                legal = durations.LegalDuration(
+                    legal.value, True, legal.quarters * 1.5)
             rest_pins[position] = legal
     # 아티큘레이션은 표기 x 가 가장 가까운 beat 의 박 전체에 걸린다
     beat_articulations: dict[int, list[str]] = {}
@@ -568,20 +634,25 @@ def _build_measure(geo, system, bounds, index, tokens, warn,
         measure["direction"] = direction or text_direction
     if from_direction or text_from:
         measure["from_direction"] = from_direction or text_from
-    repeat_open, repeat_close = _repeat_flags(geo, system, bounds)
-    if repeat_open:
+    repeats = _repeat_flags(geo, system, bounds)
+    if repeats["open"]:
         measure["repeat_open"] = True
-    if repeat_close:
+    if repeats["close"]:
         measure["repeat_close"] = True
+    # 겹반복의 이웃 마디 몫 — _resolve_boundary_repeats 가 걷어 옮긴다
+    if repeats["close_previous"]:
+        measure["_repeat_close_previous"] = True
+    if repeats["open_next"]:
+        measure["_repeat_open_next"] = True
     if not beat_xs:
         warn.add(index, "empty_measure", f"판정 {kind}, x {x0:.1f}..{x1:.1f}")
         return measure
 
-    # 잇단음표 숫자('3')가 표기된 마디에서만 셋잇단 후보를 연다 — 늘 열어두면
-    # x 간격이 우연히 3등분에 가까운 평범한 마디에 가짜 셋잇단이 유입된다
+    # 셋잇단 숫자 '3' 이 **타브 대역**에 표기된 마디에서만 후보를 연다.
+    # 늘 열면 x 간격이 우연히 3등분에 가까운 마디에 가짜 셋잇단이 유입되고,
+    # 멜로디(노래) 파트의 잇단음표나 5잇단 표기가 기타 리듬을 오염시킨다
     allow_tuplets = any(
-        x0 <= g.x < x1 and _in_range(g.char, smufl.TUPLET)
-        and _band_of(g, system) is not None
+        x0 <= g.x < x1 and g.char == TUPLET_3 and _in_tab_band(g, system)
         for g in geo.glyphs)
     target = durations.target_quarters(*time_sig)
     fitted, exact = durations.fit_durations(
@@ -622,7 +693,9 @@ def _build_measure(geo, system, bounds, index, tokens, warn,
             # 와 같은 근거를 쓴다. 이 악보에서는 매 시스템이 코드를 재표기해
             # 실제로 걸리지 않지만, 다른 악보에서는 걸린다.
             chord = _chord_at(tokens, beat_x) or carried_chord
-            voicing = chords.voicing_for(chord)
+            # 튜닝까지 넘겨 검증한다 — 표의 모양은 표준 튜닝 기준이라
+            # Drop-D 에서 표준 G 모양을 그대로 치면 6번줄이 F 가 된다
+            voicing = chords.voicing_for(chord, tuning)
             if chord is None:
                 warn.add(index, "unknown_chord",
                          f"x={beat_x:.1f} 슬래시 beat 앞에 코드명이 없다")
@@ -650,7 +723,7 @@ def _build_measure(geo, system, bounds, index, tokens, warn,
             "notes": notes,
         })
     measure["pending_row_chord"] = _assign_row_chords(
-        measure["beats"], tokens, bounds, index, warn,
+        measure["beats"], tokens, bounds, index, warn, tuning,
         pending=pending_row_chord)
     measure["pending_graces"] = _attach_graces(
         measure["beats"], grace_glyphs, system, index, warn,
@@ -661,6 +734,16 @@ def _build_measure(geo, system, bounds, index, tokens, warn,
     return measure
 
 
+
+
+def _resolve_boundary_repeats(measures: list[dict]) -> None:
+    """겹반복(:‖:)의 이웃 마디 몫을 실제 이웃에 옮긴다."""
+    for position, measure in enumerate(measures):
+        if measure.pop("_repeat_close_previous", False) and position > 0:
+            measures[position - 1]["repeat_close"] = True
+        if (measure.pop("_repeat_open_next", False)
+                and position + 1 < len(measures)):
+            measures[position + 1]["repeat_open"] = True
 
 
 def _measure_span(measure: dict) -> float:
@@ -735,14 +818,15 @@ def extract_ir(pdf_path: str, tempo: int | None = None,
     """
     warn = _Warnings()
     measures: list[dict] = []
-    header: dict[str, str] = {}
+    header_info: dict[str, str] = {}
     saw_text = False
+    active_tuning = tuple(tuning) if tuning else STANDARD_TUNING
 
     time_sig = DEFAULT_TIME_SIG
     carried_chord: str | None = None
     pending_row_chord: str | None = None
     pending_graces: list = []
-    extra_lyric_rows: dict[int, list[str]] = {}
+    extra_lyric_rows: dict[int, dict] = {}
     with pymupdf.open(pdf_path) as document:
         for page in document:
             geo = geometry.load_page_geometry(page)
@@ -768,13 +852,14 @@ def extract_ir(pdf_path: str, tempo: int | None = None,
                 detected_sigs = _detect_time_signatures(
                     geo, system, len(measures), warn)
                 if not measures:
-                    header.update(_header_fields(geo, system))
+                    header_info.update(_header_fields(geo, system))
                 tokens = _chord_tokens(geo, system, all_bounds[-1][1] + 1.0)
                 syllables, extra_rows = _lyric_syllables(
                     geo, system, len(measures), warn)
                 for row_index, row in enumerate(extra_rows):
-                    extra_lyric_rows.setdefault(row_index, []).extend(
-                        char for _, char in row)
+                    entry = extra_lyric_rows.setdefault(
+                        row_index, {"start": len(measures), "chars": []})
+                    entry["chars"].extend(char for _, char in row)
                 for bounds in all_bounds:
                     # 박자표는 표기된 마디부터 적용된다 — 시스템 첫 마디로
                     # 소급하면 중간 박자 변경이 앞 마디를 망가뜨린다
@@ -790,7 +875,7 @@ def extract_ir(pdf_path: str, tempo: int | None = None,
                     measure = _build_measure(
                         geo, system, bounds, len(measures), tokens, warn,
                         time_sig, letter_index, syllables, carried_chord,
-                        pending_row_chord, pending_graces)
+                        pending_row_chord, pending_graces, active_tuning)
                     # 빈 마디는 조기 반환이라 pending 키가 없다 — 이월분 유지
                     pending_row_chord = measure.pop("pending_row_chord",
                                                     pending_row_chord)
@@ -810,6 +895,7 @@ def extract_ir(pdf_path: str, tempo: int | None = None,
     if not measures:
         raise NotATabPdf(f"{pdf_path}: 6줄 타브 staff 를 찾지 못했다")
 
+    _resolve_boundary_repeats(measures)
     _adjust_boundary_measures(measures, warn)
     for measure in measures:
         measure.pop("_fit", None)
@@ -820,27 +906,28 @@ def extract_ir(pdf_path: str, tempo: int | None = None,
         # 내보내면 사용자가 악보에서 읽은 값이라고 믿는다.
         warn.add(0, "tempo_guessed",
                  f"악보에 BPM 표기가 없어 {DEFAULT_TEMPO} 을 넣었다"
-                 + (f" (리듬 지시: {header['rhythm']!r})" if "rhythm" in header else "")
+                 + (f" (리듬 지시: {header_info['rhythm']!r})"
+                    if "rhythm" in header_info else "")
                  + " — 음원과 맞추려면 --tempo 로 지정할 것")
 
     stem = os.path.splitext(os.path.basename(pdf_path))[0]
     result = {
         "title": title if title is not None else stem,
-        "artist": artist if artist is not None else header.get("artist", ""),
+        "artist": artist if artist is not None else header_info.get("artist", ""),
         "tempo": tempo or DEFAULT_TEMPO,
         "tempo_source": "지정" if tempo else "기본값(악보에 표기 없음)",
-        "credits": {key: value for key, value in header.items()
+        "credits": {key: value for key, value in header_info.items()
                     if key in ("words", "music", "arranger", "performer")},
-        "key": header.get("key", ""),
-        "rhythm": header.get("rhythm", ""),
-        "tuning": list(tuning) if tuning else list(STANDARD_TUNING),
+        "key": header_info.get("key", ""),
+        "rhythm": header_info.get("rhythm", ""),
+        "tuning": list(active_tuning),
         # CLI 인자가 머리글 표기('Capo 3')를 이긴다
-        "capo": capo if capo is not None else int(header.get("capo", 0)),
+        "capo": capo if capo is not None else int(header_info.get("capo", 0)),
         "measures": measures,
         "warnings": warn.items,
     }
     if extra_lyric_rows:
         result["extra_lyric_rows"] = [
-            " ".join(chars)
-            for _, chars in sorted(extra_lyric_rows.items())]
+            {"start": entry["start"], "text": " ".join(entry["chars"])}
+            for _, entry in sorted(extra_lyric_rows.items())]
     return result

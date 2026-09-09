@@ -2,6 +2,7 @@
 
 import contextlib
 import os
+import tempfile
 
 import guitarpro as gp
 from guitarpro.models import (
@@ -90,9 +91,11 @@ def _lyrics_for(ir: dict) -> Lyrics | None:
               for measure in ir["measures"] if measure["index"] >= start
               for beat in measure["beats"]]
     lines = [LyricLine(startingMeasure=start + 1, lyrics=" ".join(tokens))]
-    # 2절 이하는 beat 배정 없이 통째로 넘긴다 — GP 가 같은 선율에 분배한다
-    lines += [LyricLine(startingMeasure=start + 1, lyrics=text)
-              for text in ir.get("extra_lyric_rows", ())[:LYRIC_LINE_COUNT - 1]]
+    # 2절 이하는 beat 배정 없이 통째로 넘긴다 — GP 가 같은 선율에 분배한다.
+    # 시작 마디는 그 절이 처음 나타난 시스템의 첫 마디다 (1절 시작으로
+    # 뭉뚱그리면 뒤에서 시작하는 절이 앞당겨진다)
+    lines += [LyricLine(startingMeasure=row["start"] + 1, lyrics=row["text"])
+              for row in ir.get("extra_lyric_rows", ())[:LYRIC_LINE_COUNT - 1]]
     lines = lines[:LYRIC_LINE_COUNT]
     lines += [LyricLine() for _ in range(LYRIC_LINE_COUNT - len(lines))]
     return Lyrics(trackChoice=LYRICS_TRACK, lines=lines)
@@ -311,10 +314,15 @@ def build_song(ir: dict, *, lyric_mode: str = DEFAULT_LYRIC_MODE) -> Song:
 def write_gp5(song: Song, file_path: str) -> None:
     """.gp5 로 쓴다. 인코딩은 고정 — 한글 제목이 깨지면 안 된다.
 
-    임시 파일에 다 쓴 뒤 바꿔치기한다 — 직렬화가 도중에 실패해도
-    같은 경로의 기존 파일이 잘리지 않는다.
+    임시 파일에 다 쓴 뒤 바꿔치기한다 — 직렬화가 도중에 실패해도 같은
+    경로의 기존 파일이 잘리지 않는다. 임시 이름은 mkstemp 로 만든다 —
+    예측 가능한 `<이름>.tmp` 는 심볼릭 링크를 심어 임의 파일을 덮어쓰게
+    할 수 있고, 같은 출력을 향한 동시 변환끼리도 충돌한다.
     """
-    tmp_path = f"{file_path}.tmp"
+    directory = os.path.dirname(os.path.abspath(file_path))
+    handle, tmp_path = tempfile.mkstemp(
+        prefix=os.path.basename(file_path) + ".", dir=directory)
+    os.close(handle)
     try:
         gp.write(song, tmp_path, version=GP5_VERSION, encoding=GP5_ENCODING)
     except BaseException:

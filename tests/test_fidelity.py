@@ -367,6 +367,156 @@ def test_triplet_reaches_gp5(tmp_path):
     assert beats[3].duration.tuplet.enters == 1
 
 
+# ── 2라운드 보완 ─────────────────────────────────────────────────────────────
+
+SMUFL_SHARP = chr(0xE262)       # accidentalSharp
+SMUFL_FLAT = chr(0xE260)
+
+
+def test_smufl_accidental_in_chord_row_becomes_ascii():
+    """C + SMuFL♯ + m 은 'Cm' 이 아니라 'C#m' 이다."""
+    glyphs = [
+        _glyph(60.0, 95.0, "C"),
+        geometry.Glyph(x=65.5, y=93.0, x_end=69.0, char=SMUFL_SHARP,
+                       font="f", size=7.0),
+        _glyph(69.5, 95.0, "m"),
+    ]
+    geo = geometry.PageGeometry(glyphs=glyphs)
+    assert extract._chord_tokens(geo, SYSTEM, 400.0) == [(60.0, "C#m")]
+
+
+def test_literal_music_accidentals_are_normalized_to_ascii():
+    """'♯/♭' 는 cp949 에 없어 GP5 직렬화가 죽는다 — #/b 로 눕힌다."""
+    glyphs = ([_glyph(60.0, 95.0, "B"), _glyph(65.5, 95.0, "♭"),
+               _glyph(71.0, 95.0, "7")])
+    geo = geometry.PageGeometry(glyphs=glyphs)
+    assert extract._chord_tokens(geo, SYSTEM, 400.0) == [(60.0, "Bb7")]
+
+
+def test_row_token_already_carried_by_slash_beat_does_not_hop():
+    """슬래시 beat 이 이미 표현한 토큰이 뒤 beat 으로 흘러가면 안 된다."""
+    glyphs = [
+        _glyph(150.0, SYSTEM.tab_ys[2], "0"),               # 프렛 beat
+    ]
+    geo = geometry.PageGeometry(glyphs=[
+        *glyphs,
+        geometry.Glyph(x=60.0, y=SYSTEM.tab_ys[2], x_end=65.0,
+                       char=chr(0xE101), font="f", size=9.3),   # 슬래시
+    ])
+    warn = extract._Warnings()
+    measure = extract._build_measure(
+        geo, SYSTEM, BOUNDS, 0, [(58.0, "Am")], warn, (4, 4),
+        extract.build_letter_index(geo), [])
+    slash_beat, fret_beat = measure["beats"]
+    assert slash_beat["chord"] == "Am" and slash_beat["from_chord"]
+    assert fret_beat["chord"] is None, "슬래시가 표현한 Am 이 프렛 beat 으로 흘렀다"
+
+
+def test_stale_pending_chord_is_dropped_when_first_beat_has_its_own_token():
+    measure, _ = _measure_from(
+        [_glyph(60.0, SYSTEM.tab_ys[2], "0")],
+        tokens=[(58.0, "G")])
+    # pending 은 자기 토큰이 있는 첫 beat 을 밀어내지 못한다
+    geo = geometry.PageGeometry(glyphs=[_glyph(60.0, SYSTEM.tab_ys[2], "0")])
+    warn = extract._Warnings()
+    measure = extract._build_measure(
+        geo, SYSTEM, BOUNDS, 0, [(58.0, "G")], warn, (4, 4),
+        extract.build_letter_index(geo), [], pending_row_chord="Cadd9")
+    assert [b["chord"] for b in measure["beats"]] == ["G"]
+
+
+def test_fixed_voicings_require_matching_tuning():
+    """Drop-D 에서 표준 G 모양은 6번줄이 F 가 된다 — 검증 실패로 거부해야 한다."""
+    from tab_pdf import chords
+
+    drop_d = [64, 59, 55, 50, 45, 38]
+    assert chords.voicing_for("G", drop_d) is None
+    assert chords.voicing_for("G", [64, 59, 55, 50, 45, 40]) is not None
+    assert chords.voicing_in({"tuning": drop_d}, "G") is None
+
+
+def test_uniform_small_font_score_has_no_graces(tmp_path):
+    """정규 프렛이 8pt 인 악보에서 모든 음이 꾸밈음으로 오인되면 안 된다."""
+    path = tmp_path / "small.pdf"
+    doc = pymupdf.open()
+    page = doc.new_page(width=612, height=792)
+    melody = [100.0, 105.0, 110.0, 115.0, 120.0]
+    tab = [160.0, 168.0, 176.0, 184.0, 192.0, 200.0]
+    for y in melody + tab:
+        page.draw_line((40.0, y), (400.0, y), width=0.4)
+    page.draw_line((400.0, melody[0]), (400.0, tab[-1]), width=0.6)
+    for x in (60.0, 150.0, 240.0, 330.0):
+        page.insert_text((x, tab[2]), "0", fontsize=8.0)    # 전부 8pt
+    doc.save(str(path))
+    doc.close()
+    ir = extract.extract_ir(str(path), title="small")
+    beats = ir["measures"][0]["beats"]
+    assert len(beats) == 4, "8pt 정규 프렛이 꾸밈음으로 오인돼 beat 이 사라졌다"
+    assert all(not n.get("grace_fret") for b in beats for n in b["notes"])
+
+
+def test_quintuplet_mark_does_not_enable_triplets():
+    xs = [60.0, 90.0, 120.0, 150.0, 240.0, 330.0]
+    glyphs = [_glyph(x, SYSTEM.tab_ys[2], "0") for x in xs]
+    glyphs.append(_glyph(90.0, SYSTEM.tab_ys[5], chr(0xE885)))  # tuplet '5'
+    measure, warn = _measure_from(glyphs)
+    assert all(b.get("tuplet") is None for b in measure["beats"])
+    assert any("잇단음표" in w["detail"] for w in warn.items)
+
+
+def test_melody_band_tuplet_mark_does_not_enable_guitar_triplets():
+    xs = [60.0, 90.0, 120.0, 150.0, 240.0, 330.0]
+    glyphs = [_glyph(x, SYSTEM.tab_ys[2], "0") for x in xs]
+    glyphs.append(_glyph(90.0, 110.0, TUPLET_3))                # 멜로디 대역
+    measure, _ = _measure_from(glyphs)
+    assert all(b.get("tuplet") is None for b in measure["beats"])
+
+
+def test_dotted_rest_pins_its_dotted_duration():
+    """점4분쉼표는 1.0 이 아니라 1.5 로 고정되어야 한다."""
+    glyphs = [
+        _glyph(60.0, SYSTEM.tab_ys[2], "0"),
+        _glyph(150.0, SYSTEM.tab_ys[2], "0"),
+        _glyph(230.0, SYSTEM.tab_ys[3], REST_QUARTER),
+        geometry.Glyph(x=238.0, y=SYSTEM.tab_ys[3], x_end=240.0,
+                       char=chr(0xE1E7), font="f", size=9.3),   # 붙임점
+    ]
+    measure, warn = _measure_from(glyphs)
+    rest_beat = measure["beats"][2]
+    assert (rest_beat["duration"], rest_beat["dotted"]) == (4, True)
+    assert not any(w["kind"] == "duration_mismatch" for w in warn.items)
+
+
+def test_repeat_rightleft_closes_previous_and_opens_current(tmp_path):
+    """:‖: 겹반복은 앞 마디를 닫고 이 마디를 연다 — 한 마디에 둘 다가 아니다."""
+    pdf = _score_pdf(tmp_path / "rr.pdf", barlines=[240.0, 440.0],
+                     note_xs=[50.0, 100.0, 150.0, 200.0,
+                              250.0, 300.0, 350.0, 400.0])
+    import pymupdf as pm
+    from tab_pdf import marks
+
+    doc = pm.open(pdf)
+    geo = geometry.load_page_geometry(doc[0])
+    system = geometry.find_systems(geo)[0]
+    # 겹반복 글리프가 두 번째 마디 시작(경계 직후)에 있다
+    geo.glyphs.append(geometry.Glyph(
+        x=242.0, y=system.tab_ys[0], x_end=247.0,
+        char=chr(0xE042), font="f", size=12.0))
+    measures = []
+    warn = extract._Warnings()
+    letter_index = extract.build_letter_index(geo)
+    for i, bounds in enumerate(geometry.measure_bounds(geo, system)):
+        m = extract._build_measure(geo, system, bounds, i, [], warn, (4, 4),
+                                   letter_index, [])
+        m.pop("pending_row_chord", None); m.pop("pending_graces", None)
+        measures.append(m)
+    extract._resolve_boundary_repeats(measures)
+    assert measures[0].get("repeat_close") is True
+    assert measures[0].get("repeat_open") is None
+    assert measures[1].get("repeat_open") is True
+    assert measures[1].get("repeat_close") is None
+
+
 # ── #19 진행 지시 단어는 코드가 아니다 ───────────────────────────────────────
 
 def test_progression_words_are_not_chords():
@@ -486,7 +636,7 @@ def test_extra_lyric_rows_land_on_gp5_lyric_lines(tmp_path):
     ir = {
         "title": "t", "artist": "", "tempo": 80,
         "tuning": [64, 59, 55, 50, 45, 40],
-        "extra_lyric_rows": ["다 라"],
+        "extra_lyric_rows": [{"start": 0, "text": "다 라"}],
         "measures": [{
             "index": 0, "time_sig": [4, 4], "kind": "fret", "beats": [
                 {"x": 0, "duration": 2, "dotted": False, "chord": None,

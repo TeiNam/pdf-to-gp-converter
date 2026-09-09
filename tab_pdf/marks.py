@@ -65,23 +65,37 @@ def glyph_directions(geo, system, bounds) -> tuple[str | None, str | None]:
     return direction, from_direction
 
 
-def repeat_flags(geo, system, bounds) -> tuple[bool, bool]:
-    """반복 바라인 글리프에서 (반복 시작, 반복 끝) 을 읽는다.
+def repeat_flags(geo, system, bounds) -> dict[str, bool]:
+    """반복 바라인 글리프를 읽는다.
+
+    돌려주는 키 — open/close 는 이 마디, close_previous/open_next 는 이웃
+    마디 몫이다. 겹반복(:‖:)은 마디 경계 기호라 한 마디에 열림·닫힘을 둘 다
+    걸면 그 마디 하나가 반복되는 다른 악보가 된다 — 글리프가 마디 앞쪽이면
+    "앞 마디를 닫고 이 마디를 연다", 뒤쪽이면 "이 마디를 닫고 다음을 연다".
 
     도트가 그려진 원(드로잉)으로만 표기된 반복은 여기서 못 본다 — 그 경우는
     extract 의 반복기호 경고로 드러난다.
     """
     x0, x1 = bounds
-    is_open = is_close = False
+    flags = {"open": False, "close": False,
+             "close_previous": False, "open_next": False}
     for glyph in geo.glyphs:
         if not (x0 <= glyph.x < x1) or bands.band_of(glyph, system) is None:
             continue
         name = smufl.name(glyph.char)
-        if name in ("repeatLeft", "repeatRightLeft"):
-            is_open = True
-        if name in ("repeatRight", "repeatRightLeft"):
-            is_close = True
-    return is_open, is_close
+        if name == "repeatLeft":
+            flags["open"] = True
+        elif name == "repeatRight":
+            flags["close"] = True
+        elif name == "repeatRightLeft":
+            ratio = (glyph.x - x0) / max(x1 - x0, 1e-9)
+            if ratio < DIRECTION_TARGET_RATIO:
+                flags["close_previous"] = True
+                flags["open"] = True
+            else:
+                flags["close"] = True
+                flags["open_next"] = True
+    return flags
 
 
 def text_directions(glyph_entries: list[dict]) -> tuple[str | None, str | None]:

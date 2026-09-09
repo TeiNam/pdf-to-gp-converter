@@ -303,7 +303,9 @@ def _apply_voicing(ir: dict, correction: dict) -> str | None:
     name, reason = _chord_name(correction)
     if reason:
         return reason
-    if chords.voicing_for(name) is not None:
+    # 튜닝까지 맞아야 "이미 있다" 다 — Drop-D 에서 표준 모양은 무효라
+    # AI 보이싱이 채울 수 있어야 한다
+    if chords.voicing_for(name, ir.get("tuning")) is not None:
         return f"{name} 은 손으로 검증한 보이싱이 이미 있다"
     reason = _validate_frets(correction.get("frets"))
     if reason:

@@ -86,6 +86,19 @@ def test_real_pdf_x_noteheads_become_dead_notes():
     assert len(dead) == 8
 
 
+# ── #19 진행 지시 단어는 코드가 아니다 ───────────────────────────────────────
+
+def test_progression_words_are_not_chords():
+    """'Fine'·'Coda' 는 A~G 로 시작하지만 코드명이 아니다."""
+    from tab_pdf import chords
+
+    assert not chords.looks_like_chord("Fine")
+    assert not chords.looks_like_chord("Coda")
+    # 한 글자 루트는 여전히 코드다
+    assert chords.looks_like_chord("F")
+    assert chords.looks_like_chord("C")
+
+
 # ── #14 코드명 위첨자·유니코드 임시표 ────────────────────────────────────────
 
 def test_unicode_accidental_chord_is_recognized():

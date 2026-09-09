@@ -13,6 +13,9 @@ from dataclasses import dataclass
 # 유니코드 임시표(♯♭)도 받는다 — parse() 는 이미 받는데 여기서 거르면
 # 'C♯m' 표기가 코드 행에서 통째로 사라진다.
 _CHORD_PATTERN = re.compile(r"^[A-G](?:[#b♯♭])?[A-Za-z0-9#b♯♭/+()-]*$")
+# A~G 로 시작하지만 코드가 아닌 악보 진행 지시어. 코드로 오인하면 chord_row 를
+# 오염시키고, 이어지는 슬래시 beat 이 이 이름의 보이싱을 찾다 무음이 된다.
+_PROGRESSION_WORDS = frozenset({"Fine", "Coda"})
 
 # GP4/5 는 코드명을 22바이트 고정 필드에 쓴다 (pyguitarpro writeByteSizeString(…, 22)).
 # 넘치면 조용히 잘려서 IR 과 .gp5 의 코드명이 달라진다 — 실측으로 30자가 22자로 잘렸다.
@@ -29,7 +32,10 @@ VOICINGS: dict[str, tuple[tuple[int, int], ...]] = {
 
 def looks_like_chord(token: str) -> bool:
     """코드명 형태인지. 미등록 코드도 True 여야 경고 경로가 살아난다."""
-    return bool(_CHORD_PATTERN.match(token.strip()))
+    text = token.strip()
+    if text in _PROGRESSION_WORDS:
+        return False
+    return bool(_CHORD_PATTERN.match(text))
 
 
 def name_fits(name: str, encoding: str = "cp949") -> bool:

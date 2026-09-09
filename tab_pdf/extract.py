@@ -88,7 +88,18 @@ KEY_LABEL = "Key:"
 # 조성 표기가 붙는 리듬·연주 지시 줄을 알아보는 낱말. 라벨이 없는 자유 문구라
 # 내용으로 판정한다 — 'Slow 16Beat', '16 Beat', 'Shuffle' 따위.
 RHYTHM_WORDS = ("beat", "shuffle", "swing", "slow", "waltz", "ballad", "bounce")
-SMUFL_REST_RANGE = smufl.REST                   # 타브 대역에 나오면 경고
+SMUFL_REST_RANGE = smufl.REST
+# 쉼표 글리프 이름 → 아는 길이. 이름이 곧 길이라 x 간격 추정보다 정확하다.
+# 온쉼표(restWhole)는 "마디 전체" 관례가 있어 박자표마다 길이가 달라진다 —
+# 고정하지 않고 x 간격에 맡긴다.
+REST_DURATIONS: dict[str, durations.LegalDuration] = {
+    "restHalf": durations.LegalDuration(2, False, 2.0),
+    "restQuarter": durations.LegalDuration(4, False, 1.0),
+    "rest8th": durations.LegalDuration(8, False, 0.5),
+    "rest16th": durations.LegalDuration(16, False, 0.25),
+    "rest32nd": durations.LegalDuration(32, False, 0.125),
+}
+REST_NAMES = frozenset(REST_DURATIONS) | {"restWhole"}
 # X 음표머리(noteheadXBlack) — 타브 대역에서는 뮤트 노트다. 프렛 숫자가 없는
 # 자기만의 리듬 이벤트라 beat 으로 세워야 한다 (실측: m23·m48 에 8개)
 X_NOTEHEAD = chr(0xE0A9)
@@ -238,6 +249,13 @@ def _dead_glyphs(geo, system, x0, x1) -> list[geometry.Glyph]:
     """타브 대역의 X 음표머리 — 뮤트 노트 이벤트."""
     return [g for g in geo.glyphs
             if x0 <= g.x < x1 and g.char == X_NOTEHEAD
+            and _in_tab_band(g, system)]
+
+
+def _rest_glyphs(geo, system, x0, x1) -> list[geometry.Glyph]:
+    """타브 대역의 쉼표 — 자기 x 자리를 차지하는 무음 이벤트."""
+    return [g for g in geo.glyphs
+            if x0 <= g.x < x1 and smufl.name(g.char) in REST_NAMES
             and _in_tab_band(g, system)]
 
 
@@ -535,8 +553,9 @@ def _warn_unsupported(geo, system, x0, x1, index, warn) -> None:
         if not (x0 <= glyph.x < x1):
             continue
         if _in_tab_band(glyph, system):
-            if smufl.name(glyph.char) in ARTICULATION_KINDS:
-                continue                # _articulations 가 반영한다
+            name = smufl.name(glyph.char)
+            if name in ARTICULATION_KINDS or name in REST_NAMES:
+                continue                # _articulations·_rest_glyphs 가 반영한다
             for bounds_range, label in _UNSUPPORTED_TAB_RANGES:
                 if _in_range(glyph.char, bounds_range):
                     counts[label] = counts.get(label, 0) + 1
@@ -681,26 +700,42 @@ def _build_measure(geo, system, bounds, index, tokens, warn,
     fret_glyphs = _merge_two_digit_frets(
         _fret_glyphs(geo, system, x0, x1, letter_index), system, index, warn)
     dead_glyphs = _dead_glyphs(geo, system, x0, x1)
+    rest_glyphs = _rest_glyphs(geo, system, x0, x1)
     slash_xs = _slash_xs(geo, system, x0, x1)
     kind = _classify(fret_glyphs + dead_glyphs, slash_xs)
     _warn_unsupported(geo, system, x0, x1, index, warn)
 
     techniques = _techniques(geo, system, x0, x1, fret_glyphs, letter_index)
     articulations = _articulations(geo, system, x0, x1)
-    beat_xs = _cluster([g.x for g in fret_glyphs + dead_glyphs] + slash_xs)
+    beat_xs = _cluster([g.x for g in fret_glyphs + dead_glyphs + rest_glyphs]
+                       + slash_xs)
+    # 쉼표는 자기 beat 자리를 갖는다. 이름이 길이를 말해주면 DP 에 고정한다.
+    rest_positions: set[int] = set()
+    rest_pins: dict[int, durations.LegalDuration] = {}
+    for rest_glyph in rest_glyphs:
+        position = _nearest_beat(beat_xs, rest_glyph.x)
+        if position is None:
+            continue
+        rest_positions.add(position)
+        legal = REST_DURATIONS.get(smufl.name(rest_glyph.char) or "")
+        if legal is not None:
+            rest_pins[position] = legal
     # 아티큘레이션은 표기 x 가 가장 가까운 beat 의 박 전체에 걸린다
     beat_articulations: dict[int, list[str]] = {}
     for art_glyph, art_kind in articulations:
         position = _nearest_beat(beat_xs, art_glyph.x)
         if position is not None:
             beat_articulations.setdefault(position, []).append(art_kind)
+    # 가사는 소리 나는 beat 에만 붙는다 — 쉼표 자리는 후보에서 뺀다
+    lyric_xs = [x for i, x in enumerate(beat_xs) if i not in rest_positions]
     lyrics = _assign_lyrics(
-        beat_xs, [(x, c) for x, c in syllables if x0 <= x < x1], index, warn)
+        lyric_xs, [(x, c) for x, c in syllables if x0 <= x < x1], index, warn)
     measure = {
         "index": index, "time_sig": list(time_sig), "kind": kind, "beats": [],
         "glyphs": _annotation_glyphs(
             geo, system, bounds, beat_xs,
-            fret_glyphs + dead_glyphs + [glyph for glyph, _ in articulations]),
+            fret_glyphs + dead_glyphs + rest_glyphs
+            + [glyph for glyph, _ in articulations]),
         # 추출기가 코드 행에서 이미 조립해 읽은 이름. AI 가 낱글자를 다시 조립하면
         # 'Cadd9' 를 'C' 로 끊는 오독이 생긴다 — 읽은 결과를 그대로 넘긴다.
         "chord_row": [{"x": round(x, 1), "name": name} for x, name in tokens
@@ -724,7 +759,7 @@ def _build_measure(geo, system, bounds, index, tokens, warn,
 
     target = durations.target_quarters(*time_sig)
     fitted, exact = durations.fit_durations(
-        durations.proportions(beat_xs, x1, target), target)
+        durations.proportions(beat_xs, x1, target), target, pinned=rest_pins)
     if not exact:
         total = sum(d.quarters for d in fitted)
         warn.add(index, "duration_mismatch",
@@ -732,6 +767,14 @@ def _build_measure(geo, system, bounds, index, tokens, warn,
                  f"durs={[d.value for d in fitted]}")
 
     for position, (beat_x, duration) in enumerate(zip(beat_xs, fitted)):
+        if position in rest_positions:
+            measure["beats"].append({
+                "x": round(beat_x, 2), "duration": duration.value,
+                "dotted": duration.dotted, "rest": True, "chord": None,
+                "from_chord": False, "stroke": None, "lyric": None,
+                "techniques": [], "notes": [],
+            })
+            continue
         notes = _beat_notes(fret_glyphs, dead_glyphs, beat_x, system, index, warn)
         # 슬래시에서 온 beat 인지 좌표로 판정한다. 노트가 비었다는 이유만으로
         # 코드 보이싱을 채우면, 줄 스냅 실패한 프렛 하나가 추측한 화음으로 증폭된다.

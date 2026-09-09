@@ -85,6 +85,71 @@ def test_real_pdf_x_noteheads_become_dead_notes():
     assert len(dead) == 8
 
 
+# ── #2 타브 쉼표는 rest beat 이 되어야 한다 ──────────────────────────────────
+
+REST_QUARTER = chr(0xE4E5)      # restQuarter
+REST_8TH = chr(0xE4E6)
+
+
+def test_rest_glyph_becomes_rest_beat_with_pinned_duration():
+    """쉼표는 이름이 곧 길이다 — x 간격 추정 대신 4분쉼표로 고정된다.
+
+    음표 x=60, 쉼표 x=230 이면 x 간격은 반반(2.0/2.0)이지만, 쉼표가 4분(1.0)
+    으로 고정되므로 음표가 점2분(3.0)이 되어야 합이 맞는다.
+    """
+    glyphs = [
+        _glyph(60.0, SYSTEM.tab_ys[2], "0"),
+        _glyph(230.0, SYSTEM.tab_ys[3], REST_QUARTER),
+    ]
+    measure, warn = _measure_from(glyphs)
+    assert len(measure["beats"]) == 2
+    note_beat, rest_beat = measure["beats"]
+    assert rest_beat["rest"] is True and rest_beat["notes"] == []
+    assert (rest_beat["duration"], rest_beat["dotted"]) == (4, False)
+    assert (note_beat["duration"], note_beat["dotted"]) == (2, True)
+    assert not any(w["kind"] in ("empty_beat", "duration_mismatch", "unsupported_glyph")
+                   for w in warn.items), "쉼표가 반영됐는데 경고가 남았다"
+
+
+def test_pinned_durations_constrain_the_fit():
+    from tab_pdf import durations
+
+    pinned = {1: durations.LegalDuration(4, False, 1.0)}
+    fitted, exact = durations.fit_durations([2.0, 2.0], 4.0, pinned=pinned)
+    assert exact
+    assert [d.quarters for d in fitted] == [3.0, 1.0]
+
+
+def test_rest_and_silent_beats_reach_gp5_as_rest_status(tmp_path):
+    """#9 — 무음 beat 은 normal/0노트가 아니라 GP 표준인 rest 로 직렬화된다."""
+    beat = {"x": 0, "duration": 4, "dotted": False, "chord": None,
+            "from_chord": False, "stroke": None, "lyric": None,
+            "techniques": [], "notes": []}
+    ir = {
+        "title": "t", "artist": "", "tempo": 80,
+        "tuning": [64, 59, 55, 50, 45, 40],
+        "measures": [
+            {"index": 0, "time_sig": [4, 4], "kind": "fret", "beats": [
+                dict(beat, rest=True),                      # 명시적 쉼표
+                dict(beat, from_chord=True),                # 보이싱 모르는 슬래시
+                dict(beat, notes=[{"string": 3, "fret": 0}]),
+                dict(beat, notes=[{"string": 3, "fret": 0}]),
+            ]},
+            {"index": 1, "time_sig": [4, 4], "kind": "empty", "beats": []},
+        ],
+        "warnings": [],
+    }
+    out = tmp_path / "rest.gp5"
+    build.write_gp5(build.build_song(ir), str(out))
+    track = gp.parse(str(out), encoding="cp949").tracks[0]
+    first = track.measures[0].voices[0].beats
+    assert [b.status.name for b in first] == ["rest", "rest", "normal", "normal"]
+    # 빈 마디는 beat 0개가 아니라 온쉼표 하나다
+    empty = track.measures[1].voices[0].beats
+    assert len(empty) == 1
+    assert empty[0].status.name == "rest" and empty[0].duration.value == 1
+
+
 # ── #1 두 자리 프렛은 한 음으로 병합되어야 한다 ──────────────────────────────
 
 def test_two_digit_fret_merges_into_one_note():

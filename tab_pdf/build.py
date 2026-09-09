@@ -245,11 +245,14 @@ def build_song(ir: dict, *, lyric_mode: str = DEFAULT_LYRIC_MODE) -> Song:
         measure.voices.clear()
         voice = Voice(measure)
         for beat_ir in measure_ir["beats"]:
+            # 음이 없는 beat(명시적 쉼표, 보이싱 모르는 슬래시)은 GP 표준대로
+            # rest 로 쓴다 — normal/0노트는 GP 가 그리지 못하는 비정상 인코딩이다
+            is_silent = beat_ir.get("rest") or not beat_ir["notes"]
             beat = Beat(
                 voice,
                 duration=Duration(value=beat_ir["duration"],
                                   isDotted=beat_ir["dotted"]),
-                status=BeatStatus.normal,
+                status=BeatStatus.rest if is_silent else BeatStatus.normal,
             )
             for note_ir in beat_ir["notes"]:
                 beat.notes.append(Note(
@@ -271,6 +274,10 @@ def build_song(ir: dict, *, lyric_mode: str = DEFAULT_LYRIC_MODE) -> Song:
                     beat.effect.chord = diagram
                 previous_chord = chord_name
             voice.beats.append(beat)
+        if not voice.beats:
+            # 빈 마디를 beat 0개로 쓰면 GP 가 그리지 못한다 — 온쉼표 하나로 채운다
+            voice.beats.append(Beat(voice, duration=Duration(value=1),
+                                    status=BeatStatus.rest))
         measure.voices.append(voice)
         while len(measure.voices) < GP5_VOICE_SLOTS:
             measure.voices.append(Voice(measure))

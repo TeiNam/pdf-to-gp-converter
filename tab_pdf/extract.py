@@ -183,30 +183,49 @@ def _fret_glyphs(geo, system, x0, x1, letter_index) -> list[geometry.Glyph]:
             and not _has_adjacent_letter(letter_index, g)]
 
 
-def _warn_kerned_digit_pairs(glyphs, system, index, warn) -> None:
-    """커닝으로 붙은 숫자쌍은 두 자리 프렛일 수 있다 — 쪼개고 조용히 넘기지 않는다.
+def _merge_two_digit_frets(glyphs, system, index, warn) -> list[geometry.Glyph]:
+    """같은 줄에서 커닝으로 붙은 숫자쌍을 두 자리 프렛 한 음으로 병합한다.
 
-    이 PDF 에는 해당 사례가 없다 (실제 인접쌍은 모두 잉크 간격 0.7pt 이상의 빠른
-    연속 음이고, 합치면 25 이상이 되어 프렛으로 불가능하다). 다른 악보에서 나오면
-    경고로 드러나게 한다.
+    '12' 는 숫자 글리프 2개(origin 간격 ~5pt)로 오는데, beat 클러스터 허용
+    (2pt)보다 넓어서 병합하지 않으면 1프렛·2프렛 **별개 beat 둘**이 된다.
+    실측: 이 PDF 의 별개 음은 6.8pt 이상 떨어져 있어 6pt 문턱에 오탐이 없다.
+    병합값이 프렛 상한을 넘는 쌍(붙은 '2''5' 따위)은 별개 음으로 두되 경고한다.
     """
     by_string: dict[int, list[geometry.Glyph]] = {}
+    loose: list[geometry.Glyph] = []
     for glyph in glyphs:
         string = _snap_to_string(glyph.y, system.tab_ys)
-        if string is not None:
+        if string is None:
+            loose.append(glyph)         # 스냅 실패는 _beat_notes 가 경고한다
+        else:
             by_string.setdefault(string, []).append(glyph)
+    merged: list[geometry.Glyph] = loose
     for string, group in by_string.items():
         group.sort(key=lambda g: g.x)
-        for left, right in zip(group, group[1:]):
-            if (right.x - left.x_end >= KERNED_DIGIT_INK_GAP
-                    and right.x - left.x >= KERNED_DIGIT_ORIGIN_GAP):
+        position = 0
+        while position < len(group):
+            left = group[position]
+            right = group[position + 1] if position + 1 < len(group) else None
+            apart = (right is None
+                     or (right.x - left.x_end >= KERNED_DIGIT_INK_GAP
+                         and right.x - left.x >= KERNED_DIGIT_ORIGIN_GAP))
+            if apart:
+                merged.append(left)
+                position += 1
                 continue
-            merged = int(left.char + right.char)
-            if merged > MAX_FRET:
+            value = int(left.char + right.char)
+            if value > MAX_FRET:
+                warn.add(index, "unsupported_glyph",
+                         f"string{string} 의 {left.char!r}{right.char!r} 가 "
+                         f"붙어 있으나 {value}프렛은 불가능하다 — 별개 음으로 둔다")
+                merged.append(left)
+                position += 1
                 continue
-            warn.add(index, "unsupported_glyph",
-                     f"string{string} 의 {left.char!r}{right.char!r} 가 붙어 있다 "
-                     f"— 두 자리 프렛 {merged} 일 수 있으나 별개 음으로 처리했다")
+            merged.append(geometry.Glyph(
+                x=left.x, y=left.y, x_end=right.x_end,
+                char=left.char + right.char, font=left.font, size=left.size))
+            position += 2
+    return sorted(merged, key=lambda g: g.x)
 
 
 def _slash_xs(geo, system, x0, x1) -> list[float]:
@@ -659,12 +678,12 @@ def _build_measure(geo, system, bounds, index, tokens, warn,
                    carried_chord: str | None = None,
                    pending_row_chord: str | None = None) -> dict:
     x0, x1 = bounds
-    fret_glyphs = _fret_glyphs(geo, system, x0, x1, letter_index)
+    fret_glyphs = _merge_two_digit_frets(
+        _fret_glyphs(geo, system, x0, x1, letter_index), system, index, warn)
     dead_glyphs = _dead_glyphs(geo, system, x0, x1)
     slash_xs = _slash_xs(geo, system, x0, x1)
     kind = _classify(fret_glyphs + dead_glyphs, slash_xs)
     _warn_unsupported(geo, system, x0, x1, index, warn)
-    _warn_kerned_digit_pairs(fret_glyphs, system, index, warn)
 
     techniques = _techniques(geo, system, x0, x1, fret_glyphs, letter_index)
     articulations = _articulations(geo, system, x0, x1)

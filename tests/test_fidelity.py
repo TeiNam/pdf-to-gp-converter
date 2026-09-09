@@ -85,6 +85,54 @@ def test_real_pdf_x_noteheads_become_dead_notes():
     assert len(dead) == 8
 
 
+# ── #1 두 자리 프렛은 한 음으로 병합되어야 한다 ──────────────────────────────
+
+def test_two_digit_fret_merges_into_one_note():
+    """'1'+'2' 가 5pt 간격으로 붙어 있으면 12프렛 한 음이다 — 두 beat 이 아니다."""
+    glyphs = [
+        _glyph(60.0, SYSTEM.tab_ys[2], "1"),
+        _glyph(65.0, SYSTEM.tab_ys[2], "2"),
+    ]
+    measure, _ = _measure_from(glyphs)
+    assert len(measure["beats"]) == 1, "두 자리 프렛이 두 beat 으로 쪼개졌다"
+    assert measure["beats"][0]["notes"] == [{"string": 3, "fret": 12}]
+
+
+def test_distinct_notes_seven_points_apart_stay_separate():
+    """실측: 별개 음의 최소 간격은 6.8pt — 7pt 는 빠른 연속 음 둘이다."""
+    glyphs = [
+        _glyph(60.0, SYSTEM.tab_ys[2], "1"),
+        _glyph(67.0, SYSTEM.tab_ys[2], "2"),
+    ]
+    measure, _ = _measure_from(glyphs)
+    assert len(measure["beats"]) == 2
+    assert [b["notes"][0]["fret"] for b in measure["beats"]] == [1, 2]
+
+
+def test_impossible_merge_stays_separate_with_warning():
+    """붙은 '2'+'5' 는 25프렛이 될 수 없다 — 별개 음으로 두되 경고한다."""
+    glyphs = [
+        _glyph(60.0, SYSTEM.tab_ys[2], "2"),
+        _glyph(65.0, SYSTEM.tab_ys[2], "5"),
+    ]
+    measure, warn = _measure_from(glyphs)
+    assert sorted(n["fret"] for b in measure["beats"] for n in b["notes"]) == [2, 5]
+    assert any(w["kind"] == "unsupported_glyph" and "붙어" in w["detail"]
+               for w in warn.items)
+
+
+def test_two_digit_frets_on_different_strings_do_not_merge():
+    """다른 줄의 세로로 쌓인 화음 숫자는 병합 대상이 아니다."""
+    glyphs = [
+        _glyph(60.0, SYSTEM.tab_ys[1], "1"),
+        _glyph(60.0, SYSTEM.tab_ys[2], "2"),
+    ]
+    measure, _ = _measure_from(glyphs)
+    assert len(measure["beats"]) == 1
+    assert sorted((n["string"], n["fret"]) for n in measure["beats"][0]["notes"]) \
+        == [(2, 1), (3, 2)]
+
+
 # ── #17 아티큘레이션 글리프는 AI 없이도 결정론적으로 매핑되어야 한다 ─────────
 
 ACCENT_BELOW = chr(0xE4A1)      # articAccentBelow

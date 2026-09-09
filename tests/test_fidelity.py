@@ -492,10 +492,7 @@ def test_repeat_rightleft_closes_previous_and_opens_current(tmp_path):
     pdf = _score_pdf(tmp_path / "rr.pdf", barlines=[240.0, 440.0],
                      note_xs=[50.0, 100.0, 150.0, 200.0,
                               250.0, 300.0, 350.0, 400.0])
-    import pymupdf as pm
-    from tab_pdf import marks
-
-    doc = pm.open(pdf)
+    doc = pymupdf.open(pdf)
     geo = geometry.load_page_geometry(doc[0])
     system = geometry.find_systems(geo)[0]
     # 겹반복 글리프가 두 번째 마디 시작(경계 직후)에 있다

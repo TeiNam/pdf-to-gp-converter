@@ -256,7 +256,6 @@ def test_voice_completed_by_multi_segment_rest_pins_is_not_a_pickup():
 
 def test_beamed_triplet_with_a_middle_rest_stays_a_triplet(tmp_path):
     """8분-8분쉼표-8분 셋잇단(빔은 양 끝 음만 잇는다) 뒤 4분 셋."""
-    xs = (60., 85., 110.)
     geo = geometry.PageGeometry(
         glyphs=[glyph(60, 176, "0"), glyph(85, 184, chr(0xE4E6)), glyph(110, 176, "0"),
                 *[glyph(x, 176, "0") for x in (150., 240., 330.)], glyph(85, 222, TUPLET)],
@@ -291,7 +290,7 @@ def test_triplet_mark_follows_its_beam_not_the_nearest_note(tmp_path):
         vlines=[*[geometry.VLine(x + 2.5, 167, 197) for x in lower_xs],
                 *[geometry.VLine(x + 2.5, 163, 180) for x in (60., 150.)]],
         beams=[geometry.Beam(62.5, 167, 122.5, 167)])
-    result, warn = measure(geo)
+    result, _ = measure(geo)
     lower_voice = next(b["voice"] for b in result["beats"] if b["notes"]
                        and b["notes"][0]["string"] == 6)
     triplets = [b for b in result["beats"] if b["tuplet"]]

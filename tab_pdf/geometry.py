@@ -1,6 +1,7 @@
 """PDF 저수준 기하 수집. 음악적 해석은 하지 않는다."""
 
 from dataclasses import dataclass, field
+from itertools import pairwise
 
 MELODY_LINE_COUNT = 5
 TAB_LINE_COUNT = 6
@@ -22,6 +23,13 @@ BARLINE_MERGE_GAP = 6.0
 SPAN_TOLERANCE = 2.0
 # 타브 최상단 선과 같은 선으로 볼 y 오차 (pt)
 SAME_LINE_TOLERANCE = 1.0
+# 아래 문턱들이 전제한 staff 선 간격 (pt) — 실측 대상 악보의 인접 선 간격 중앙값.
+# 다른 배율로 내보낸 PDF 는 좌표를 이 간격에 맞춰 되돌린 뒤 해석한다
+# (실측: 125% 확대본은 정규화 없이 음 1564개 중 291개를 잃었다)
+REFERENCE_STAFF_GAP = 7.7
+# 이 안의 배율 차이는 문턱들의 여유로 흡수된다 — 좌표를 건드리지 않는다
+# (합성 악보의 8pt 타브 간격은 기준보다 4% 넓지만 그대로 읽힌다)
+SCALE_TOLERANCE = 0.05
 
 
 @dataclass(frozen=True)
@@ -107,16 +115,16 @@ def _iter_segments(page):
                     yield rect.x0, rect.y0, rect.x0, rect.y1
 
 
-def _beam_polygon(points) -> Beam | None:
+def _beam_polygon(points, scale: float = 1.0) -> Beam | None:
     """검은 사각형의 좌우 변을 잇는다. 삽화·슬러의 임의 경로는 받지 않는다."""
     x0, x1 = min(p.x for p in points), max(p.x for p in points)
-    if x1 - x0 < 3.0:
+    if x1 - x0 < 3.0 * scale:
         return None
-    left = [p.y for p in points if abs(p.x - x0) < 0.5]
-    right = [p.y for p in points if abs(p.x - x1) < 0.5]
+    left = [p.y for p in points if abs(p.x - x0) < 0.5 * scale]
+    right = [p.y for p in points if abs(p.x - x1) < 0.5 * scale]
     if len(left) + len(right) != len(points) or not left or not right:
         return None
-    if not all(0.8 <= max(ys) - min(ys) <= 4.0 for ys in (left, right)):
+    if not all(0.8 * scale <= max(ys) - min(ys) <= 4.0 * scale for ys in (left, right)):
         return None
     y0, y1 = (min(left) + max(left)) / 2, (min(right) + max(right)) / 2
     if abs(y1 - y0) > (x1 - x0) / 2:
@@ -124,34 +132,61 @@ def _beam_polygon(points) -> Beam | None:
     return Beam(x0, y0, x1, y1)
 
 
-def _drawing_beams(drawing):
-    """빔은 검게 채운 사각형/평행사변형 또는 두꺼운 선이다."""
+def _drawing_beams(drawing, scale: float = 1.0):
+    """빔은 검게 채운 사각형/평행사변형 또는 두꺼운 선이다. 문턱은 배율을 따른다."""
     items = drawing["items"]
     fill = drawing.get("fill")
     if fill is not None and all(c <= 0.1 for c in fill):
         for item in items:
             if item[0] == "re":
                 rect = item[1]
-                beam = _beam_polygon([rect.tl, rect.tr, rect.bl, rect.br])
+                beam = _beam_polygon([rect.tl, rect.tr, rect.bl, rect.br], scale)
                 if beam is not None:
                     yield beam
             elif item[0] == "qu":
-                beam = _beam_polygon(list(item[1]))
+                beam = _beam_polygon(list(item[1]), scale)
                 if beam is not None:
                     yield beam
         if len(items) == 4 and all(item[0] == "l" for item in items):
-            beam = _beam_polygon([item[1] for item in items])
+            beam = _beam_polygon([item[1] for item in items], scale)
             if beam is not None:
                 yield beam
     elif (fill is None and drawing.get("color") is not None
           and all(c <= 0.1 for c in drawing["color"])
-          and 0.8 <= (drawing.get("width") or 0) <= 4.0):
+          and 0.8 * scale <= (drawing.get("width") or 0) <= 4.0 * scale):
         for item in items:
             if item[0] != "l":
                 continue
             a, b = sorted(item[1:], key=lambda p: p.x)
-            if b.x - a.x >= 3.0 and abs(b.y - a.y) <= (b.x - a.x) / 2:
+            if b.x - a.x >= 3.0 * scale and abs(b.y - a.y) <= (b.x - a.x) / 2:
                 yield Beam(a.x, a.y, b.x, b.y)
+
+
+def page_scale(hlines: list[HLine]) -> float:
+    """staff 선 간격으로 잰 페이지 배율. 선이 없거나 기준과 거의 같으면 1."""
+    ys = sorted({round(h.y, 1) for h in hlines if h.width > MIN_STAFF_LINE_WIDTH})
+    gaps = sorted(b - a for a, b in pairwise(ys))
+    if not gaps:
+        return 1.0
+    # 시스템 하나에 선 사이 간격 9개, 시스템 사이 간격 1~2개 — 중앙값은 선 간격이다
+    scale = gaps[len(gaps) // 2] / REFERENCE_STAFF_GAP
+    return 1.0 if abs(scale - 1.0) < SCALE_TOLERANCE else scale
+
+
+def _normalized(geo: PageGeometry, scale: float) -> PageGeometry:
+    """모든 좌표·글자 크기를 기준 배율로 되돌린 새 기하."""
+    if scale == 1.0:
+        return geo
+    return PageGeometry(
+        hlines=[HLine(h.y / scale, h.x0 / scale, h.x1 / scale) for h in geo.hlines],
+        vlines=[VLine(v.x / scale, v.y0 / scale, v.y1 / scale) for v in geo.vlines],
+        glyphs=[Glyph(g.x / scale, g.y / scale, g.x_end / scale, g.char, g.font,
+                      round(g.size / scale, 1)) for g in geo.glyphs],
+        curves=[Curve(c.x0 / scale, c.y0 / scale, c.x1 / scale, c.y1 / scale, c.above)
+                for c in geo.curves],
+        beams=[Beam(b.x0 / scale, b.y0 / scale, b.x1 / scale, b.y1 / scale)
+               for b in geo.beams],
+    )
 
 
 def load_page_geometry(page) -> PageGeometry:
@@ -161,11 +196,12 @@ def load_page_geometry(page) -> PageGeometry:
             geo.hlines.append(HLine(y0, min(x0, x1), max(x0, x1)))
         elif abs(x1 - x0) < VERTICAL_TOLERANCE:
             geo.vlines.append(VLine(x0, min(y0, y1), max(y0, y1)))
+    scale = page_scale(geo.hlines)
 
     # 곡선(타이·슬러 호). 한 호가 베지어 여러 조각이라 드로잉 단위로 모아
     # 좌우 끝점만 남긴다 — 음악적 해석(타이인지)은 extract 의 몫이다.
     for drawing in page.get_drawings():
-        geo.beams.extend(_drawing_beams(drawing))
+        geo.beams.extend(_drawing_beams(drawing, scale))
         points = [point for item in drawing["items"] if item[0] == "c"
                   for point in (item[1], item[4])]
         if points:
@@ -186,7 +222,7 @@ def load_page_geometry(page) -> PageGeometry:
                         x=ch["origin"][0], y=ch["origin"][1], x_end=ch["bbox"][2],
                         char=ch["c"], font=span["font"], size=round(span["size"], 1),
                     ))
-    return geo
+    return _normalized(geo, scale)
 
 
 def staff_groups(geo: PageGeometry) -> list[list[float]]:

@@ -7,6 +7,10 @@ STEM_GAP = 11.0
 STEM_MARGIN = 35.0
 DOT_WINDOW = 10.0
 DOT_Y_TOLERANCE = 4.0
+# 빔 스택은 기둥 끝에서 시작해 일정 간격으로 쌓인다 — 줄 간격 비율로 잰다.
+# 실측: 첫 빔은 기둥 끝 0.1pt 안, 빔 사이 3.8pt (줄 간격 7.7 의 절반)
+BEAM_END_RATIO = 0.5
+BEAM_GAP_RATIO = 0.8
 
 
 def stems_for(geo, system, glyph):
@@ -29,17 +33,25 @@ def has_dot(geo, glyph, end_x):
 def duration_for(geo, system, glyph, end_x):
     """분명한 빔/꼬리만 고정한다. 기둥만 있는 타브는 2분·4분을 구별 못 한다."""
     candidates = []
+    spacing = (system.tab_ys[-1] - system.tab_ys[0]) / (len(system.tab_ys) - 1)
     for stem in stems_for(geo, system, glyph):
         end_y = max((stem.y0, stem.y1), key=lambda y: abs(y - glyph.y))
-        ys = sorted(beam.y_at(stem.x) for beam in geo.beams
-                    if beam.x0 - 0.5 <= stem.x <= beam.x1 + 0.5
-                    and stem.y0 - 2 <= beam.y_at(stem.x) <= stem.y1 + 2
-                    and abs(beam.y_at(stem.x) - end_y) <= 14.0)
-        # 같은 빔을 외곽선과 면으로 중복 수집했어도 한 줄로 센다.
+        # 기둥 끝에서 안쪽으로 잰 거리. 스택 전체 높이에 상한을 두지 않는다 —
+        # 빔 간격이 넓은 악보에서 마지막 빔이 잘려 64분이 32분이 됐다.
+        distances = sorted(abs(beam.y_at(stem.x) - end_y) for beam in geo.beams
+                           if beam.x0 - 0.5 <= stem.x <= beam.x1 + 0.5
+                           and stem.y0 - 2 <= beam.y_at(stem.x) <= stem.y1 + 2)
         levels = []
-        for y in ys:
-            if not levels or y - levels[-1] > 1.0:
-                levels.append(y)
+        for distance in distances:
+            if not levels:
+                if distance > BEAM_END_RATIO * spacing:
+                    break           # 기둥 끝에 닿은 빔이 없다
+                levels.append(distance)
+            elif distance - levels[-1] > BEAM_GAP_RATIO * spacing:
+                break               # 스택이 끊겼다 — 다른 음의 빔이다
+            elif distance - levels[-1] > 1.0:
+                # 같은 빔을 외곽선과 면으로 중복 수집했어도 한 줄로 센다.
+                levels.append(distance)
         flags = [((ord(g.char) - 0xE240) // 2 + 1)
                  for g in geo.glyphs
                  if 0xE240 <= ord(g.char) <= 0xE247
@@ -69,12 +81,8 @@ def note_pins(geo, system, beat_xs, glyphs, end_x, tolerance=2.0):
     return pins
 
 
-def voice_assignments(geo, system, notes, rests, tolerance=2.0):
-    """동시 음/쉼표 또는 반대 방향 기둥이 있으면 두 성부로 나눈다.
-
-    한 성부의 기둥도 위아래로 바뀐다. 방향만으로 다성부라고 판정하지 않고,
-    같은 시각의 충돌이 있을 때만 위 기둥=0, 아래 기둥=1을 사용한다.
-    """
+def _stem_directions(geo, system, notes):
+    """음마다 기둥 방향 — 0=위, 1=아래. 기둥 없는 음은 빠진다."""
     directions = {}
     for note in notes:
         stems = stems_for(geo, system, note)
@@ -84,30 +92,54 @@ def voice_assignments(geo, system, notes, rests, tolerance=2.0):
                 abs(s.x - (note.x + note.x_end) / 2)))
             end = max((stem.y0, stem.y1), key=lambda y: abs(y - note.y))
             directions[note] = int(end > note.y)
+    return directions
+
+
+def _x_groups(notes, tolerance):
     groups = []
     for note in sorted(notes, key=lambda g: g.x):
         if groups and note.x - groups[-1][0].x <= tolerance:
             groups[-1].append(note)
         else:
             groups.append([note])
-    polyphonic = any(
+    return groups
+
+
+def voice_assignments(geo, system, notes, rests, tolerance=2.0):
+    """한 마디의 음·쉼표를 두 성부로 나눈다. 단성부면 None.
+
+    다성부 근거는 셋이다 — 같은 시각의 반대 방향 기둥, 음과 같은 x 의 쉼표,
+    음이 있는 마디의 온쉼표(한 성부 안에서 온쉼표와 음은 공존할 수 없다).
+    한 성부의 기둥도 위아래로 바뀌므로 방향만으로는 판정하지 않는다.
+    """
+    directions = _stem_directions(geo, system, notes)
+    groups = _x_groups(notes, tolerance)
+    whole_rests = [r for r in rests if smufl.name(r.char) == "restWhole"]
+    conflict = any(
         {directions[g] for g in group if g in directions} == {0, 1}
         for group in groups)
-    polyphonic |= any(abs(rest.x - note.x) <= tolerance
-                      for rest in rests for note in notes)
-    if not polyphonic:
+    conflict |= any(abs(rest.x - note.x) <= tolerance
+                    for rest in rests for note in notes)
+    if not conflict and not (whole_rests and notes):
         return None
     assignments = {}
     for group in groups:
         known = [g for g in group if g in directions]
         for note in group:
+            if not conflict:
+                assignments[note] = 0   # 온쉼표만이 근거다 — 음은 첫 성부에 둔다
+                continue
             # 화음의 기둥은 구성음 하나에만 닿을 수 있다.
             reference = min(known, key=lambda g: abs(g.y - note.y)) if known else None
             assignments[note] = directions.get(note, directions.get(reference, 0))
+    used = set(assignments.values())
+    middle = (system.tab_ys[0] + system.tab_ys[-1]) / 2
     for rest in rests:
         occupied = {assignments[n] for n in notes if abs(n.x - rest.x) <= tolerance}
+        if rest in whole_rests and len(used) == 1:
+            occupied = used     # 온쉼표는 음이 없는 쪽 성부의 마디 전체 쉼이다
         assignments[rest] = (1 - next(iter(occupied)) if len(occupied) == 1
-                             else int(rest.y >= (system.tab_ys[0] + system.tab_ys[-1]) / 2))
+                             else int(rest.y >= middle))
     return assignments
 
 
@@ -120,36 +152,54 @@ def beam_members(geo, system, beam, beat_xs, notes, tolerance=2.0):
             and stem.y0 - 2 <= beam.y_at(stem.x) <= stem.y1 + 2}
 
 
+def is_triplet_mark(mark, system, notes=(), fret_glyphs=()) -> bool:
+    """타브의 셋잇단 표기 — SMuFL '3' 또는 음이 아닌 텍스트 '3'.
+
+    아래 기둥 성부의 '3' 은 기둥 끝 너머(타브 대역 밖)에 찍힌다. 위쪽은 오선이
+    가까워 타브 대역까지만 받는다 — 오선 선율의 잇단음표가 섞이면 안 된다.
+    """
+    if mark.char == chr(0xE883):
+        return (system.tab_ys[0] - bands.TAB_BAND_MARGIN <= mark.y
+                <= system.tab_ys[-1] + STEM_MARGIN)
+    return (mark.char == "3" and mark not in notes and mark not in fret_glyphs
+            and system.tab_ys[0] - STEM_MARGIN <= mark.y
+            <= system.tab_ys[-1] + STEM_MARGIN)
+
+
 def triplet_groups(geo, system, beat_xs, notes, bounds, fret_glyphs=()):
-    """'3'의 위치와 빔으로 묶음을 정한다. 마디 전체에 셋잇단을 허용하지 않는다."""
-    if len(beat_xs) < 3:
-        return []
-    result = []
+    """'3'의 위치와 빔으로 셋잇단 범위를 정한다.
+
+    Returns: (확정 묶음 목록, 셋잇단 후보만 여는 인덱스). 빔이 정확히 세 음을
+    묶을 때만 확정한다. 빔이 없거나 음 수가 다르면(4분+8분 셋잇단, 쉼표가 낀
+    묶음) 표기 주변 이벤트에 후보만 열어 마디 합 풀이가 고르게 한다 — 이웃 세
+    이벤트를 강제로 묶으면 뒤따르는 정상 음표가 셋잇단에 끌려 들어간다.
+    """
+    forced, opened = [], set()
+    if len(beat_xs) < 2:
+        return forced, opened
     for mark in geo.glyphs:
         if not bounds[0] <= mark.x < bounds[1]:
             continue
-        explicit = mark.char == chr(0xE883) and bands.in_tab_band(mark, system)
-        text = (mark.char == "3" and mark not in notes and mark not in fret_glyphs
-                and system.tab_ys[0] - STEM_MARGIN <= mark.y
-                <= system.tab_ys[-1] + STEM_MARGIN)
-        if not explicit and not text:
+        explicit = mark.char == chr(0xE883)
+        if not is_triplet_mark(mark, system, notes, fret_glyphs):
             continue
-        candidates = []
+        near = []
         for beam in geo.beams:
             if not (beam.x0 - 3 <= mark.x <= beam.x1 + 3
                     and abs(beam.y_at(mark.x) - mark.y) <= 12):
                 continue
             members = beam_members(geo, system, beam, beat_xs, notes)
-            if len(members) == 3 and max(members) - min(members) == 2:
-                candidates.append((abs(beam.y_at(mark.x) - mark.y), sorted(members)))
-        if candidates:
-            result.append(min(candidates)[1])
+            if members:
+                near.append((abs(beam.y_at(mark.x) - mark.y), sorted(members)))
+        exact = [(d, m) for d, m in near if len(m) == 3 and m[-1] - m[0] == 2]
+        if exact:
+            forced.append(min(exact)[1])
+        elif explicit and near:
+            opened |= set(min(near)[1])
         elif explicit:
-            # 쉼표가 끼면 빔이 끊긴다. 표기 숫자가 가운데 놓인 세 이벤트를 묶는다.
-            start = min(range(len(beat_xs) - 2),
-                        key=lambda i: abs((beat_xs[i] + beat_xs[i + 2]) / 2 - mark.x))
-            result.append(list(range(start, start + 3)))
-    return result
+            nearest = sorted(range(len(beat_xs)), key=lambda i: abs(beat_xs[i] - mark.x))
+            opened |= set(nearest[:3])
+    return forced, opened - {i for group in forced for i in group}
 
 
 def shared_triplet_group(geo, system, beat_xs, notes, bounds, pins, target):

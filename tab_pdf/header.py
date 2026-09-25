@@ -16,6 +16,13 @@ HEADER_LABELS = {
     "연주": "performer",
 }
 KEY_LABEL = "Key:"
+# 조성 표기 — 'Am'·'F# minor'·'Bb Major'·'Cmaj'. 공백이 빠진 글리프 스트림도 받는다
+KEY_PATTERN = re.compile(r"([A-G])([#b]?)\s*(major|maj|minor|min|m|M)?", re.IGNORECASE)
+# 5도권 위치 — 조표의 # 개수(음수면 b). 단조는 같은 으뜸음 장조보다 3칸 왼쪽이다
+_FIFTHS = {"F": -1, "C": 0, "G": 1, "D": 2, "A": 3, "E": 4, "B": 5}
+# GP5 조표 범위. 넘으면 이명동음 조로 옮긴다 (Gbm → F#m, Fb → E)
+_MAX_ACCIDENTALS = 7
+_CHROMATIC_FIFTHS = 12
 # 머리글의 카포 표기 — 글리프 스트림에 공백이 없어 'Capo3'·'카포:3' 형태다
 CAPO_PATTERN = re.compile(r"(?i)(?:capo|카포)\D{0,3}(\d{1,2})")
 # 튜닝 문자열의 음 이름 하나 (Eb·F# 지원)
@@ -23,6 +30,25 @@ TUNING_NOTE = re.compile(r"[A-Ga-g][#b♯♭]?")
 # 조성 표기가 붙는 리듬·연주 지시 줄을 알아보는 낱말. 라벨이 없는 자유 문구라
 # 내용으로 판정한다 — 'Slow 16Beat', '16 Beat', 'Shuffle' 따위.
 RHYTHM_WORDS = ("beat", "shuffle", "swing", "slow", "waltz", "ballad", "bounce")
+
+
+def parse_key(text: str) -> tuple[int, int] | None:
+    """조성 표기를 (조표 #개수, 모드 0=장조·1=단조) 로. 못 읽으면 None."""
+    text = (text or "").strip().replace("♯", "#").replace("♭", "b")
+    match = KEY_PATTERN.fullmatch(text)
+    if match is None or not match.group(1).isupper():
+        return None
+    root, accidental, mode_text = match.groups()
+    # 한 글자는 대소문자가 뜻이다 — 'm' 은 단조, 'M' 은 장조
+    mode = mode_text or ""
+    minor = mode == "m" or mode.lower() in ("min", "minor")
+    fifths = (_FIFTHS[root] + {"#": 7, "b": -7}.get(accidental, 0)
+              - (3 if minor else 0))
+    if fifths > _MAX_ACCIDENTALS:
+        fifths -= _CHROMATIC_FIFTHS
+    elif fifths < -_MAX_ACCIDENTALS:
+        fifths += _CHROMATIC_FIFTHS
+    return fifths, int(minor)
 
 
 def parse_tuning(text: str) -> list[int]:

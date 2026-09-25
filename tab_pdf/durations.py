@@ -4,13 +4,14 @@ PDF 를 모르는 순수 계산 모듈이다. 추출기가 확정한 음가는 �
 나머지 음가만 x 간격 비례와 마디 합 제약으로 추정한다.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import lru_cache
 
 EPSILON = 1e-9
-# 모든 legal 길이는 1/48 (64분음표의 절반 = 셋잇단까지의 공배수) 의 배수다.
-# 정수 단위로 환산해 DP 로 정확히 푼다 — 64분음표 = 3단위, 셋잇단 8분 = 16단위.
-UNIT_QUARTERS = 1.0 / 48.0
+# 모든 legal 길이는 1/96 박의 배수다 — 점64분(0.09375)과 셋잇단까지의 공배수.
+# 정수 단위로 환산해 DP 로 정확히 푼다 — 64분음표 = 6단위, 점64분 = 9단위,
+# 셋잇단 8분 = 32단위. 1/48 이면 점64분이 4.5단위라 반올림돼 넘친 마디가 통과했다.
+UNIT_QUARTERS = 1.0 / 96.0
 # DP 캐시 크기 — (beat index, 남은 단위) 조합 상한. beat 수십 × 단위 수백이면 충분
 DP_CACHE_SIZE = 100_000
 
@@ -71,8 +72,10 @@ def _nearest(prop: float) -> LegalDuration:
     return min(LEGAL, key=lambda legal: abs(legal.quarters - prop))
 
 
-def _units(quarters: float) -> int:
-    return round(quarters / UNIT_QUARTERS)
+def _units(quarters: float) -> int | None:
+    """단위 수. 단위의 배수가 아니면 None — 반올림한 값으로 합을 속이지 않는다."""
+    units = round(quarters / UNIT_QUARTERS)
+    return units if abs(units * UNIT_QUARTERS - quarters) < EPSILON else None
 
 
 # 잇단음표 표기가 없는 마디용 후보 — 셋잇단 제외
@@ -92,14 +95,20 @@ REST_DURATIONS: dict[str, LegalDuration] = {
 REST_NAMES = frozenset(REST_DURATIONS) | {"restWhole"}
 
 
+def as_triplet(legal: LegalDuration) -> LegalDuration:
+    """같은 음표 모양의 셋잇단 길이 (3개를 2개 자리에)."""
+    return LegalDuration(legal.value, legal.dotted, legal.quarters * 2 / 3, TRIPLET)
+
+
 def fit_durations(props: list[float], target: float,
                   pinned: dict[int, LegalDuration] | None = None,
                   allow_tuplets: bool = False,
                   tuplet_indices: set[int] | None = None,
+                  open_tuplet_indices: set[int] | frozenset[int] = frozenset(),
                   ) -> tuple[list[LegalDuration], bool]:
     """비례값을 legal 값으로 스냅하되 합이 정확히 target 이 되게 맞춘다.
 
-    독립 스냅은 반올림 때문에 합이 어긋난다. legal 길이가 모두 1/48박의 배수이므로
+    독립 스냅은 반올림 때문에 합이 어긋난다. legal 길이가 모두 1/96박의 배수이므로
     정수 단위 DP 로 "합이 정확히 target 이면서 스냅 오차 총합이 최소" 인 조합을
     찾는다. 그리디와 달리 해가 존재하면 반드시 찾는다 — 예: `[4.0, 4.0]` 을
     target 4.0 에 맞출 때 그리디는 실패했지만 DP 는 `[2.0, 2.0]` 을 찾는다.
@@ -112,6 +121,8 @@ def fit_durations(props: list[float], target: float,
     셋잇단이 유입된다 (실측: 이 악보 m5·m7 이 바뀌었다).
 
     `tuplet_indices`를 주면 그 묶음만 셋잇단으로, 나머지는 일반 음가로 푼다.
+    `open_tuplet_indices` 는 셋잇단일 수도 아닐 수도 있는 자리다 — '3' 표기는
+    있는데 묶음 범위를 확정할 빔이 없을 때 강제하지 않고 후보만 연다.
 
     Returns: (스냅 결과, 합이 정확히 맞았는지)
     """
@@ -122,14 +133,19 @@ def fit_durations(props: list[float], target: float,
 
     def candidates_at(index):
         if index in pins:
-            return (pins[index],)
+            pin = pins[index]
+            if index in open_tuplet_indices and pin.tuplet is None:
+                return (pin, as_triplet(pin))
+            return (pin,)
+        if index in open_tuplet_indices:
+            return LEGAL
         if tuplet_indices is not None:
             return tuple(d for d in LEGAL
                          if bool(d.tuplet) == (index in tuplet_indices))
         return legal_pool
 
     target_units = _units(target)
-    if target_units <= 0:
+    if target_units is None or target_units <= 0:
         return [_nearest(prop) for prop in props], False
 
     @lru_cache(maxsize=DP_CACHE_SIZE)
@@ -142,7 +158,7 @@ def fit_durations(props: list[float], target: float,
         candidates = candidates_at(index)
         for legal in candidates:
             need = _units(legal.quarters)
-            if need > remaining:
+            if need is None or need > remaining:
                 continue
             tail = solve(index + 1, remaining - need)
             if tail is None:
@@ -175,3 +191,139 @@ def rest_durations(quarters: float) -> list[LegalDuration]:
         if exact:
             return result
     raise ValueError(f"쉼표로 표현할 수 없는 길이: {quarters}")
+
+
+def _exact_legal(quarters: float, tuplet: bool) -> LegalDuration | None:
+    """정확히 이 길이인 legal 값. 셋잇단 자리면 셋잇단을 먼저 본다."""
+    matches = [d for d in LEGAL if abs(d.quarters - quarters) < EPSILON]
+    matches.sort(key=lambda d: bool(d.tuplet) != tuplet)
+    return matches[0] if matches else None
+
+
+def _largest_within(quarters: float, tuplet: bool) -> LegalDuration | None:
+    fitting = [d for d in LEGAL if bool(d.tuplet) == tuplet
+               and d.quarters <= quarters + EPSILON]
+    return max(fitting, key=lambda d: d.quarters, default=None)
+
+
+@dataclass(frozen=True)
+class VoiceEvents:
+    """한 성부의 리듬 이벤트 — x 오름차순. 인덱스는 xs 의 인덱스다."""
+
+    xs: tuple[float, ...]
+    pins: dict[int, LegalDuration] = field(default_factory=dict)
+    rests: frozenset[int] = frozenset()
+    tuplets: frozenset[int] = frozenset()
+    open_tuplets: frozenset[int] = frozenset()
+    # 이 성부가 온쉼표 하나뿐 — 놓인 x 와 무관하게 마디 전체를 쉰다
+    whole_rest: bool = False
+
+
+@dataclass(frozen=True)
+class Alignment:
+    """성부별 (이벤트 인덱스 | None=채움 쉼표, 길이) 목록과 공통 시간축."""
+
+    slots: tuple[tuple[tuple[int | None, LegalDuration], ...], ...]
+    union_xs: tuple[float, ...]
+    union_pins: dict[int, LegalDuration]
+    exact: bool
+    problems: tuple[str, ...]
+
+
+def _union_timeline(voices, tolerance):
+    active = [v for v in voices if not v.whole_rest]
+    union: list[float] = []
+    for x in sorted(x for v in active for x in v.xs):
+        if not union or x - union[-1] > tolerance:
+            union.append(x)
+    # 각 성부 이벤트 → 공통 시간축 인덱스
+    positions = [[min(range(len(union)), key=lambda k: abs(union[k] - x)) for x in v.xs]
+                 if not v.whole_rest else [] for v in voices]
+    return union, positions
+
+
+def _segment_constraints(voices, positions, count):
+    """한 구간만 덮는 이벤트의 확정 길이를 공통 구간에 옮긴다.
+
+    셋잇단 표시는 이벤트가 시작하는 구간에만 준다 — 성부의 마지막 음처럼
+    생략된 쉼표까지 덮는 이벤트가 마디 끝 구간을 전부 셋잇단으로 만들면 안 된다.
+    """
+    pins: dict[int, LegalDuration] = {}
+    forced: set[int] = set()
+    opened: set[int] = set()
+    for voice, where in zip(voices, positions):
+        for i, k in enumerate(where):
+            following = where[i + 1] if i + 1 < len(where) else count
+            if following == k + 1 and i in voice.pins:
+                pins.setdefault(k, voice.pins[i])
+            if i in voice.tuplets:
+                forced.add(k)
+            if i in voice.open_tuplets:
+                opened.add(k)
+    return pins, forced, opened - forced
+
+
+def _voice_slots(voice, where, onsets, segments, total, problems):
+    """공통 시각에 맞춰 이 성부의 이벤트 길이를 정하고 빈 곳은 쉼표로 채운다."""
+    slots: list[tuple[int | None, LegalDuration]] = []
+
+    def fill(quarters, event=None):
+        try:
+            parts = rest_durations(quarters)
+        except ValueError as exc:
+            problems.append(str(exc))
+            return
+        for position, part in enumerate(parts):
+            slots.append((event if position == 0 else None, part))
+
+    if where and onsets[where[0]] > EPSILON:
+        fill(onsets[where[0]])
+    for i, k in enumerate(where):
+        end = onsets[where[i + 1]] if i + 1 < len(where) else total
+        span = end - onsets[k]
+        first = segments[k]
+        if i in voice.rests and i not in voice.pins:
+            fill(span, event=i)
+            continue
+        # 길이를 모르는 음은 다음 음까지 이어진다고 본다. 그 길이가 음가가 아니면
+        # 셋잇단 음은 첫 구간 길이를, 아니면 들어가는 최대 음가를 쓰고 나머지를 쉰다
+        chosen = (voice.pins.get(i) or _exact_legal(span, first.tuplet is not None)
+                  or (first if first.tuplet else _largest_within(span, False)))
+        if chosen is None:
+            problems.append(f"이벤트 {i}: {span:.3f}박을 음가로 나타낼 수 없다")
+            continue
+        if chosen.quarters > span + EPSILON:
+            problems.append(f"이벤트 {i}: 확정 음가 {chosen.quarters:.3f}박이 "
+                            f"다음 이벤트까지 {span:.3f}박보다 길다")
+        slots.append((i, chosen))
+        if span - chosen.quarters > EPSILON:
+            fill(span - chosen.quarters)
+    return slots
+
+
+def align_voices(voices: list[VoiceEvents], measure_end_x: float, target: float,
+                 tolerance: float) -> Alignment:
+    """여러 성부를 하나의 시간축에 올린다.
+
+    성부마다 따로 x 간격을 맞추면 두 성부가 같은 x 에 둔 음이 다른 시각에
+    시작한다. 모든 성부 이벤트의 x 를 합친 공통 시간축을 먼저 풀고, 각 성부의
+    음은 그 시각 사이를 채운다. 확정 음가가 구간보다 짧으면 남는 몫은 쉼표다
+    (타브는 다른 성부가 연주하는 동안의 쉼표를 흔히 생략한다).
+    """
+    union, positions = _union_timeline(voices, tolerance)
+    union_pins, forced, opened = _segment_constraints(voices, positions, len(union))
+    segments, exact = fit_durations(
+        proportions(union, measure_end_x, target), target, pinned=union_pins,
+        tuplet_indices=forced, open_tuplet_indices=opened)
+    onsets = [0.0]
+    for segment in segments:
+        onsets.append(onsets[-1] + segment.quarters)
+    total = onsets[-1] if union else target
+    problems: list[str] = []
+    slots = tuple(
+        tuple((0, d) if i == 0 else (None, d)
+              for i, d in enumerate(rest_durations(target))) if v.whole_rest
+        else tuple(_voice_slots(v, where, onsets, segments, total, problems))
+        for v, where in zip(voices, positions))
+    return Alignment(slots, tuple(union), union_pins, exact and not problems,
+                     tuple(problems))

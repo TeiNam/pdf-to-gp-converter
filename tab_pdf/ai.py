@@ -228,6 +228,9 @@ def _complete_openai(config: Config, system: str, user: str) -> str:
             continue
         except openai.OpenAIError as exc:
             raise AiUnavailable(f"{config.label} 호출 실패: {exc}") from exc
+        if not response.choices:
+            # 일부 호환 서버는 오류 대신 빈 choices 를 돌려준다 — 배치 실패로 남긴다
+            raise AiUnavailable(f"{config.label} 이 choices 없는 응답을 보냈습니다")
         choice = response.choices[0]
         text = choice.message.content or ""
         if not text:
@@ -242,7 +245,7 @@ def _complete_openai(config: Config, system: str, user: str) -> str:
 
 def _bedrock_text(config: Config, response: dict) -> str:
     """Converse 응답에서 text 블록만 모은다. 비어 있으면 이유를 말한다."""
-    blocks = response["output"]["message"]["content"]
+    blocks = ((response.get("output") or {}).get("message") or {}).get("content") or []
     text = "".join(block.get("text", "") for block in blocks)
     if text:
         return text

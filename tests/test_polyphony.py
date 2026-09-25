@@ -692,3 +692,45 @@ def test_dense_twelve_eight_two_voices_is_fast(tmp_path):
     up, low = round_trip(song_for([result]), tmp_path).tracks[0].measures[0].voices
     assert voice_total(up) == voice_total(low) == BAR * 3 // 2
     assert not warn.items
+
+
+# --- 7라운드 교차 리뷰 재현 사례 ---
+
+def test_closing_segment_respects_the_floor_of_another_note(tmp_path):
+    """4/4: 윗 [4분쉼표@60, 점2분쉼표@213], 아래 [32분@60, 8분@87, 점16분@114, 점2분쉼표@213]."""
+    lower_g, lower_s = _pinned_voice([(60, .125), (87, .5), (114, .375)], 200, True)
+    geo = geometry.PageGeometry(
+        glyphs=[glyph(60, 152, QUARTER_REST),
+                glyph(213, 152, chr(0xE4E4)), glyph(219, 152, chr(0xE1E7)),
+                *lower_g, glyph(213, 192, chr(0xE4E4)), glyph(219, 192, chr(0xE1E7))],
+        vlines=lower_s)
+    result, warn = measure(geo, bounds=(40., 420.))
+    upper, lower = round_trip(song_for([result]), tmp_path).tracks[0].measures[0].voices
+    assert voice_total(upper) == voice_total(lower) == BAR
+    assert not warn.items
+
+
+def test_short_closing_segments_are_not_pruned(tmp_path):
+    """1/16: 윗 64분 넷, 아래 [점64분, 64분, 점64분] — 공통 구간에 1/32박이 생긴다."""
+    upper_g, upper_s = _pinned_voice([(60, .0625), (80, .0625), (100, .0625), (120, .0625)],
+                                     160, False)
+    lower_g, lower_s = _pinned_voice([(60, .09375), (90, .0625), (110, .09375)], 200, True)
+    geo = geometry.PageGeometry(glyphs=upper_g + lower_g, vlines=upper_s + lower_s)
+    result, warn = measure(geo, bounds=(40., 140.), time_sig=(1, 16))
+    upper, lower = round_trip(song_for([result]), tmp_path).tracks[0].measures[0].voices
+    assert voice_total(upper) == voice_total(lower) == 240
+    assert not warn.items
+
+
+def test_sixty_fourth_triplets_are_on_the_triplet_grid(tmp_path):
+    """1/4: 윗 [64분 셋잇단 셋 + '3', 점8분, 32분], 아래 4분쉼표."""
+    upper_g, upper_s = _pinned_voice(
+        [(60, .0625), (70, .0625), (80, .0625), (90, .75), (270, .125)], 160, False)
+    geo = geometry.PageGeometry(
+        glyphs=[*upper_g, glyph(70, 128, TUPLET), glyph(60, 192, QUARTER_REST)],
+        vlines=upper_s)
+    result, warn = measure(geo, bounds=(40., 300.), time_sig=(1, 4))
+    upper, lower = round_trip(song_for([result]), tmp_path).tracks[0].measures[0].voices
+    assert [b.duration.tuplet.enters for b in upper.beats][:3] == [3, 3, 3]
+    assert voice_total(upper) == voice_total(lower) == 960
+    assert not warn.items

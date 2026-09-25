@@ -24,9 +24,9 @@ from .durations import (
 )
 
 # 값의 격자 (단위 = 1/96 박). 일반 음가는 전부 3단위의 배수, 셋잇단 음가는 전부
-# 8단위의 배수다. 0.5 박(48단위)처럼 둘 다인 값은 양쪽 해석이 된다
+# 4단위(64분 셋잇단)의 배수다. 0.5 박(48단위)처럼 둘 다인 값은 양쪽 해석이 된다
 PLAIN_UNITS = 3
-TRIPLET_UNITS = 8
+TRIPLET_UNITS = 4
 # 자유 구간의 합성값 격자 — 64분(6단위)·16분 셋잇단(16단위). 더 잘게 두면 후보가
 # 늘어 풀이가 느려진다. 더 잘은 값은 확정 길이가 닫는 구간에서 직접 들어온다
 COARSE_PLAIN_UNITS = 6
@@ -185,11 +185,21 @@ def _solve(props, target_units, constraints, triplets, plains):
     table = [_candidates(props[k], *constraints.floors.get(k, (0.0, False)),
                          singles, composites, k in triplets, k in plains)
              for k in range(len(props))]
+    # 뒤 구간들이 채울 수 있는 단위 범위 — 못 채우는 상태를 일찍 버린다. Span 이
+    # 닫히는 구간은 후보표 밖의 길이(1/32 박 등)를 직접 받으므로 범위를 열어 둔다
+    closers = {span.stop - 1 for span in constraints.spans}
+    # 닫는 구간도 그 자리 음의 하한을 지킨다 (셋잇단 자리면 2/3 까지)
+    floor_units = []
+    for k in range(len(props)):
+        low_q, convertible = constraints.floors.get(k, (0.0, False))
+        scale = 2 / 3 if (convertible and k in triplets) else 1.0
+        floor_units.append(low_q * scale / UNIT_QUARTERS)
     low = [0] * (len(props) + 1)
     high = [0] * (len(props) + 1)
     for k in range(len(props) - 1, -1, -1):
         units = [u for u, _ in table[k]] or [0]
-        low[k], high[k] = low[k + 1] + min(units), high[k + 1] + max(units)
+        smallest, largest = (1, target_units) if k in closers else (min(units), max(units))
+        low[k], high[k] = low[k + 1] + smallest, high[k + 1] + largest
 
     @cache
     def solve(index, onset, pending):
@@ -208,7 +218,8 @@ def _solve(props, target_units, constraints, triplets, plains):
         if closing:
             need = closing.pop()
             options = [(need, next((c for u, c in table[index] if u == need), 0.0))]
-            if need <= 0 or (index in triplets and not _triplet(need)) or (
+            if need <= 0 or need < floor_units[index] - EPSILON or (
+                    index in triplets and not _triplet(need)) or (
                     index in plains and not _plain(need)):
                 return None
         else:

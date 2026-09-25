@@ -241,7 +241,8 @@ def triplet_groups(geo, system, beat_xs, notes, bounds, fret_glyphs=()):
             members = set(nearest[:3]) | (set(min(spans)[1]) if spans else set())
             windows.append(tuple(range(min(members), max(members) + 1)))
     taken = {i for group in forced for i in group}
-    return forced, [w for w in map(lambda w: _free_run(w, taken), windows) if len(w) >= 2]
+    free = (_free_run(window, taken) for window in windows)
+    return forced, [window for window in free if len(window) >= 2]
 
 
 def _free_run(window, taken):

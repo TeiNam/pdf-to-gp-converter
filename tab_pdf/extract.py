@@ -749,6 +749,8 @@ def _assemble_voices(measure: dict, target: float, warn: _Warnings) -> None:
             annotations[key] = mapped
     measure["glyphs"] = list(annotations.values())
     fit["beat_xs"] = list(alignment.union_xs)
+    # 모든 성부가 온쉼표(또는 비었다) — 단성부의 온쉼표 마디처럼 폭으로 줄이지 않는다
+    fit["full_measure_rest"] = not alignment.union_xs
     # 한 성부가 확정 음가만으로(채움 쉼표 없이) 마디를 채웠는가 — 못갖춘마디 보호
     fit["pins_fill"] = any(
         voice.whole_rest or (
@@ -1036,7 +1038,7 @@ def _adjust_boundary_measures(measures: list[dict], warn: _Warnings) -> None:
     길이를 추정한다. 안쪽 마디는 손대지 않는다 — 조판 변동으로 좁아진
     마디를 오판하면 멀쩡한 마디가 망가진다.
     """
-    scored = [m for m in measures if m["beats"] and "_fit" in m]
+    scored = [m for m in measures if m["beats"] and "_fit" in m and m["_fit"]["beat_xs"]]
     if len(scored) < 3:
         return                      # 스케일을 잴 안쪽 표본이 없다
     scales = sorted(

@@ -35,6 +35,8 @@ REFERENCE_DIGIT_SIZE = 9.3
 SCALE_AGREEMENT = 0.1
 # 프렛 숫자의 baseline 은 자기 줄에서 선 간격의 절반 안에 있다 (실측 3.3pt / 7.7pt)
 FRET_ON_LINE_RATIO = 0.6
+# 배율을 모를 때 staff 묶음을 가르는 선 간격 배수 — 선 사이는 1배, staff 사이는 4배 이상
+STAFF_GROUP_RATIO = 1.6
 # 이 안의 배율 차이는 문턱들의 여유로 흡수된다 — 좌표를 건드리지 않는다
 # (합성 악보의 8pt 타브 간격은 기준보다 4% 넓지만 그대로 읽힌다)
 SCALE_TOLERANCE = 0.05
@@ -184,11 +186,20 @@ def page_scale(hlines: list[HLine], glyphs: list[Glyph]) -> float:
     scale = gaps[len(gaps) // 2] / REFERENCE_STAFF_GAP
     if abs(scale - 1.0) < SCALE_TOLERANCE:
         return 1.0
-    # 선 위에 놓인 숫자(프렛)만 센다 — 머리글 날짜·페이지 번호가 최빈값을 차지하면
-    # 배율을 잘못 확증한다
+    # 타브(6선) 줄 위의 숫자(프렛)만 센다 — 머리글 날짜·오선 위 운지 숫자가
+    # 최빈값을 차지하면 배율을 잘못 확증한다. 묶음은 선 간격에 비례해 가른다
     gap = gaps[len(gaps) // 2]
-    sizes = Counter(g.size for g in glyphs if g.char.isdigit()
-                    and min(abs(g.y - y) for y in ys) <= FRET_ON_LINE_RATIO * gap)
+    groups, current = [], [ys[0]]
+    for y in ys[1:]:
+        if y - current[-1] <= STAFF_GROUP_RATIO * gap:
+            current.append(y)
+        else:
+            groups.append(current)
+            current = [y]
+    groups.append(current)
+    tab_lines = [y for group in groups if len(group) == TAB_LINE_COUNT for y in group]
+    sizes = Counter(g.size for g in glyphs if g.char.isdigit() and tab_lines
+                    and min(abs(g.y - y) for y in tab_lines) <= FRET_ON_LINE_RATIO * gap)
     if not sizes:
         return 1.0      # 확인할 숫자가 없다 — 조판 차이일 수 있어 건드리지 않는다
     digit_scale = sizes.most_common(1)[0][0] / REFERENCE_DIGIT_SIZE

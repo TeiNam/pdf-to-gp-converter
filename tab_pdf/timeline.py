@@ -251,7 +251,9 @@ def fit_timeline(props: list[float], target: float, constraints: _Constraints,
     Returns: (구간 길이, 정확히 풀렸는가, 셋잇단 자리)
     """
     target_units = _units(target)
-    if not props or target_units is None:
+    if not props:
+        return [], True, set()      # 모든 성부가 온쉼표 — 풀 구간이 없다
+    if target_units is None:
         return [_nearest(p).quarters for p in props], False, set()
 
     def evaluate(choice):

@@ -814,3 +814,21 @@ def test_stroke_is_not_pulled_to_the_other_voices_beam():
     result, _ = measure(geo)
     stroked = [(b["x"], b["voice"]) for b in result["beats"] if b.get("stroke")]
     assert stroked == [(150.0, 0)]
+
+
+# --- 10라운드 교차 리뷰 재현 사례 ---
+
+def test_two_whole_rests_in_the_middle_of_a_song_do_not_crash():
+    measures, warnings, left = [], [], 40.
+    for index in range(3):
+        glyphs = ([glyph(left + 160, 152, WHOLE_REST), glyph(left + 160, 192, WHOLE_REST)]
+                  if index == 1 else [glyph(left + x, 176, "0") for x in (5, 55, 105, 155)])
+        result, warn = measure(geometry.PageGeometry(glyphs=glyphs),
+                               bounds=(left, left + 200.), index=index)
+        measures.append(result)
+        warnings.extend(warn.items)
+        left += 200.
+    warn = extract._Warnings(warnings)
+    extract._adjust_boundary_measures(measures, warn)
+    assert all(m["time_sig"] == [4, 4] for m in measures)
+    assert not warn.items

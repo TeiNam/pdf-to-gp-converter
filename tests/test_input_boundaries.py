@@ -174,3 +174,24 @@ def test_header_digits_do_not_decide_the_page_scale(tmp_path):
     doc.close()
     ir = extract.extract_ir(str(path), tempo=80)
     assert [[n["fret"] for n in b["notes"]] for b in ir["measures"][0]["beats"]] == [[5]] * 4
+
+
+def test_melody_fingering_digits_do_not_decide_the_page_scale(tmp_path):
+    """오선 위 7.2pt 운지 숫자 다섯 — 타브 6선 그룹의 숫자만 배율 근거다."""
+    import pymupdf
+    path = tmp_path / "fingered.pdf"
+    doc = pymupdf.open()
+    page = doc.new_page(width=612, height=792)
+    melody = [100. + 5 * i for i in range(5)]
+    tab = [150. + 6 * i for i in range(6)]
+    for y in melody + tab:
+        page.draw_line((40, y), (400, y), width=0.4)
+    page.draw_line((400, melody[0]), (400, tab[-1]), width=0.6)
+    for x in (70., 150., 230., 310.):
+        page.insert_text((x, tab[2] + 3.3), "5", fontsize=9.3)
+    for x in (60., 120., 180., 240., 300.):
+        page.insert_text((x, 97), "1", fontsize=7.2)
+    doc.save(path)
+    doc.close()
+    ir = extract.extract_ir(str(path), tempo=80)
+    assert [[n["fret"] for n in b["notes"]] for b in ir["measures"][0]["beats"]] == [[5]] * 4

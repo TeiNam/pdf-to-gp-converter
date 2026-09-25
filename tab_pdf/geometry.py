@@ -35,6 +35,8 @@ REFERENCE_DIGIT_SIZE = 9.3
 SCALE_AGREEMENT = 0.1
 # 프렛 숫자의 baseline 은 자기 줄에서 선 간격의 절반 안에 있다 (실측 3.3pt / 7.7pt)
 FRET_ON_LINE_RATIO = 0.6
+# 숫자에 알파벳이 붙어 있다고 볼 거리 — 선 간격 배수 (추출기 2.5pt / 7.7pt 와 같은 비)
+LETTER_ADJACENCY_RATIO = 0.33
 # 배율을 모를 때 staff 묶음을 가르는 선 간격 배수 — 선 사이는 1배, staff 사이는 4배 이상
 STAFF_GROUP_RATIO = 1.6
 # 이 안의 배율 차이는 문턱들의 여유로 흡수된다 — 좌표를 건드리지 않는다
@@ -210,7 +212,17 @@ def page_scale(hlines: list[HLine], glyphs: list[Glyph]) -> float:
         return any(x0 <= glyph.x <= x1 and min(abs(glyph.y - y) for y in group)
                    <= FRET_ON_LINE_RATIO * gap for group, x0, x1 in tabs)
 
-    sizes = Counter(g.size for g in glyphs if g.char.isdigit() and on_tab(g))
+    # 알파벳이 붙은 숫자는 주석이다 ('1st'·'2nd') — 추출기의 텍스트 배제와 같은 기준
+    letters = [g for g in glyphs if g.char.isalpha()]
+    near = LETTER_ADJACENCY_RATIO * gap
+
+    def in_text(glyph: Glyph) -> bool:
+        return any(abs(other.y - glyph.y) <= near
+                   and (abs(other.x - glyph.x_end) < near or abs(glyph.x - other.x_end) < near)
+                   for other in letters)
+
+    sizes = Counter(g.size for g in glyphs
+                    if g.char.isdigit() and on_tab(g) and not in_text(g))
     if not sizes:
         return 1.0      # 확인할 숫자가 없다 — 조판 차이일 수 있어 건드리지 않는다
     digit_scale = sizes.most_common(1)[0][0] / REFERENCE_DIGIT_SIZE

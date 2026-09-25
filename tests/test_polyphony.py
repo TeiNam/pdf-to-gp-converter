@@ -866,3 +866,45 @@ def test_grace_carried_into_a_lower_voice_slash_chord():
     low = next(n for b in second["beats"] for n in b["notes"] if n["string"] == 6)
     assert low.get("grace_fret") == 2
     assert not [w for w in warn.items if w["kind"] == "grace_dropped"]
+
+
+# --- 12라운드 교차 리뷰 재현 사례 ---
+
+def test_triplet_window_is_centered_on_the_mark():
+    """3/8: 꼬리 8분 넷 x=(60,100,110,116), '3' 은 x=90 — 첫 세 음이 셋잇단이다."""
+    xs = (60., 100., 110., 116.)
+    geo = geometry.PageGeometry(
+        glyphs=[*[glyph(x, 176, "0") for x in xs], *[_flag(x, 1) for x in xs],
+                glyph(90, 232, TUPLET)],
+        vlines=[geometry.VLine(x + 2.5, 179, 225) for x in xs])
+    result, warn = measure(geo, bounds=(40., 136.), time_sig=(3, 8))
+    assert [b["tuplet"] for b in result["beats"]] == [[3, 2]] * 3 + [None]
+    assert not warn.items
+
+
+def test_stroke_follows_x_not_the_closer_note_of_the_other_voice():
+    geo = geometry.PageGeometry(
+        glyphs=[*[glyph(x, 160, "3") for x in (60., 150., 240., 330.)],
+                *[glyph(x, 200, "0") for x in (60., 158., 240., 330.)],
+                glyph(150, 188, extract.SMUFL_STROKE_DOWN)],
+        vlines=[*up_stems((60., 150., 240., 330.)), *down_stems((60., 158., 240., 330.))])
+    result, _ = measure(geo)
+    assert [(b["x"], b["voice"]) for b in result["beats"] if b.get("stroke")] == [(150.0, 0)]
+
+
+def test_same_voice_tie_is_not_reported_as_cross_voice():
+    """윗 1번줄 3 · 아래 6번줄 5 → 단성부 화음 (1:3, 6:5), 타이는 1번줄에만."""
+    geo = geometry.PageGeometry(
+        glyphs=[glyph(60, 160, "3"), glyph(60, 200, "5"),
+                glyph(420, 160, "3"), glyph(420, 200, "5")],
+        vlines=[*up_stems((60.,)), *down_stems((60.,)),
+                *[geometry.VLine(x, 100., 200.) for x in (40., 400., 760.)]],
+        curves=[geometry.Curve(63., 157., 419., 157., True)])
+    warn = extract._Warnings()
+    letters = extract.build_letter_index(geo)
+    measures = [extract._build_measure(geo, SYSTEM, bounds, i, [], warn, (4, 4), letters, [])
+                for i, bounds in enumerate(((40., 400.), (400., 760.)))]
+    extract._apply_tie_curves(geo, SYSTEM, measures, warn)
+    tied = {n["string"] for n in measures[1]["beats"][0]["notes"] if n.get("tie")}
+    assert tied == {1}
+    assert not [w for w in warn.items if w["kind"] == "tie_across_voices"]

@@ -235,10 +235,13 @@ def triplet_groups(geo, system, beat_xs, notes, bounds, fret_glyphs=()):
         if exact:
             forced.append(min(exact)[1])
         elif explicit:
-            # 빔이 묶은 음과 표기에 가장 가까운 세 이벤트를 함께 본다 — 빔이 뒤 두
-            # 음만 잇는 [쉼표·8분·8분] 셋잇단의 쉼표를 창에서 빼면 안 된다
-            nearest = sorted(range(len(beat_xs)), key=lambda i: abs(beat_xs[i] - mark.x))
-            members = set(nearest[:3]) | (set(min(spans)[1]) if spans else set())
+            # 빔이 묶은 음과 표기가 가운데 놓인 연속 세 이벤트를 함께 본다 — 빔이 뒤
+            # 두 음만 잇는 [쉼표·8분·8분] 셋잇단의 쉼표를 창에서 빼면 안 되고, 표기에
+            # 가장 가까운 세 이벤트를 고르면 묶음이 다음 음으로 밀린다
+            start = min(range(max(1, len(beat_xs) - 2)), key=lambda i: abs(
+                (beat_xs[i] + beat_xs[min(i + 2, len(beat_xs) - 1)]) / 2 - mark.x))
+            members = set(range(start, min(start + 3, len(beat_xs))))
+            members |= set(min(spans)[1]) if spans else set()
             windows.append(tuple(range(min(members), max(members) + 1)))
     taken = {i for group in forced for i in group}
     free = (_free_run(window, taken) for window in windows)

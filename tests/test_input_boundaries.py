@@ -214,3 +214,21 @@ def test_measure_number_left_of_the_staff_does_not_decide_the_page_scale(tmp_pat
     doc.close()
     ir = extract.extract_ir(str(path), tempo=80)
     assert [[n["fret"] for n in b["notes"]] for b in ir["measures"][0]["beats"]] == [[5]] * 2
+
+
+def test_annotation_digits_do_not_decide_the_page_scale(tmp_path):
+    import pymupdf
+    path = tmp_path / "annotated.pdf"
+    doc = pymupdf.open()
+    page = doc.new_page(width=612, height=792)
+    melody = [100. + 5 * i for i in range(5)]
+    tab = [150. + 6 * i for i in range(6)]
+    for y in melody + tab:
+        page.draw_line((40, y), (400, y), width=0.4)
+    page.draw_line((400, melody[0]), (400, tab[-1]), width=0.6)
+    page.insert_text((200, tab[2] + 3.3), "5", fontsize=9.3)
+    page.insert_text((80, 147), "1st 2nd", fontsize=7.2)
+    doc.save(path)
+    doc.close()
+    ir = extract.extract_ir(str(path), tempo=80)
+    assert [[n["fret"] for n in b["notes"]] for b in ir["measures"][0]["beats"]] == [[5]]

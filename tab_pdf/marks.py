@@ -220,11 +220,6 @@ def _apply_voice_ties(geo, system, beats, warn, owner):
                   & {(n["string"], n["fret"]) for n in beats[right]["notes"]})
         if not shared:
             continue
-        if beats[left].get("voice", 0) != beats[right].get("voice", 0):
-            warn.add(owner[id(beats[right])], "tie_across_voices",
-                     f"x={beats[right]['x']:.1f} 타이가 다른 성부의 음을 잇는다 "
-                     f"— GP5 는 성부를 건너 타이를 걸 수 없어 다시 친다")
-            continue
         # 슬래시 하나가 화음 전체를 나타낼 때만 모든 구성음에 타이를 건다.
         if not (beats[left].get("from_chord") and beats[right].get("from_chord")):
             middle = (curve.y0 + curve.y1) / 2
@@ -240,6 +235,13 @@ def _apply_voice_ties(geo, system, beats, warn, owner):
                    for y in (curve.y0, curve.y1)) > spacing:
                 continue
             shared = {pair for pair in shared if pair[0] == string}
+        # 호가 가리키는 음을 정한 뒤에 성부를 본다 — 같은 x 의 다른 성부 음 때문에
+        # 정상 타이에 경고가 붙으면 안 된다
+        if beats[left].get("voice", 0) != beats[right].get("voice", 0):
+            warn.add(owner[id(beats[right])], "tie_across_voices",
+                     f"x={beats[right]['x']:.1f} 타이가 다른 성부의 음을 잇는다 "
+                     f"— GP5 는 성부를 건너 타이를 걸 수 없어 다시 친다")
+            continue
         for note in beats[right]["notes"]:
             if (note["string"], note["fret"]) in shared:
                 note["tie"] = True

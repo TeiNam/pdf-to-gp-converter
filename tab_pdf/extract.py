@@ -652,13 +652,13 @@ def _voice_of_marks(geo, system, bounds, notes, rests, frets, graces, raw_digits
 def _pending_voice(entry: dict, notes, assigned, system) -> int:
     """앞 마디에서 넘어온 꾸밈음은 이 마디에서 그 줄의 첫 음이 가진 성부로 간다.
 
-    그 줄에 보이는 음이 없으면 가장 앞 슬래시의 성부로 보낸다 — 슬래시 화음의
-    보이싱은 모든 줄을 덮지만 글리프는 한 줄 자리에만 찍힌다.
+    슬래시도 후보다 — 슬래시 화음의 보이싱은 모든 줄을 덮지만 글리프는 한 줄
+    자리에만 찍힌다. 그 줄의 음과 슬래시 중 가장 앞선 것을 따른다.
     """
     same_string = [n for n in notes
                    if _snap_to_string(n.y, system.tab_ys) == entry["string"]]
     slashes = [n for n in notes if _in_range(n.char, SMUFL_SLASH_RANGE)]
-    first = min(same_string or slashes, key=lambda n: n.x, default=None)
+    first = min(same_string + slashes, key=lambda n: n.x, default=None)
     return assigned.get(first, 0)
 
 

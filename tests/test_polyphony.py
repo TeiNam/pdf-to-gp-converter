@@ -908,3 +908,50 @@ def test_same_voice_tie_is_not_reported_as_cross_voice():
     tied = {n["string"] for n in measures[1]["beats"][0]["notes"] if n.get("tie")}
     assert tied == {1}
     assert not [w for w in warn.items if w["kind"] == "tie_across_voices"]
+
+
+# --- 13라운드 교차 리뷰 재현 사례 ---
+
+def test_double_beam_on_a_narrow_tab_staff():
+    """타브 간격 6pt 에 이중 빔 간격 5pt — 16분 넷이 8분으로 읽히면 안 된다."""
+    system = geometry.System((100., 105., 110., 115., 120.),
+                             tuple(150. + 6 * i for i in range(6)))
+    xs = (60., 100., 140., 180.)
+    geo = geometry.PageGeometry(
+        glyphs=[glyph(x, 165, "0") for x in xs],
+        vlines=[geometry.VLine(x + 2.5, 168, 205) for x in xs],
+        beams=[geometry.Beam(62.5, 205, 182.5, 205), geometry.Beam(62.5, 200, 182.5, 200)])
+    warn = extract._Warnings()
+    result = extract._build_measure(geo, system, (40., 220.), 0, [], warn, (1, 4),
+                                    extract.build_letter_index(geo), [])
+    assert [b["duration"] for b in result["beats"]] == [16] * 4
+    assert not warn.items
+
+
+def test_long_beam_does_not_shift_the_triplet_window():
+    xs = (60., 100., 110., 116.)
+    geo = geometry.PageGeometry(
+        glyphs=[*[glyph(x, 176, "0") for x in xs], glyph(90, 232, TUPLET)],
+        vlines=[geometry.VLine(x + 2.5, 179, 225) for x in xs],
+        beams=[geometry.Beam(62.5, 225, 118.5, 225)])
+    result, warn = measure(geo, bounds=(40., 136.), time_sig=(3, 8))
+    assert [b["tuplet"] for b in result["beats"]] == [[3, 2]] * 3 + [None]
+    assert not warn.items
+
+
+def test_carried_grace_goes_to_the_earliest_slash_chord():
+    """아랫성부 G 슬래시(1박)가 윗성부 6번줄 3프렛(2박)보다 앞선다."""
+    slash = chr(extract.SMUFL_SLASH_RANGE[0])
+    geo = geometry.PageGeometry(
+        glyphs=[glyph(420, 160, "3"), glyph(420, 184, slash), glyph(510, 200, "3"),
+                glyph(600, 160, "3"), glyph(690, 160, "3")],
+        vlines=[*up_stems((420., 510., 600., 690.)), geometry.VLine(422.5, 187, 225),
+                *[geometry.VLine(x, 100., 200.) for x in (40., 400., 760.)]])
+    warn = extract._Warnings()
+    pending = [{"x": -1.0, "string": 6, "fret": 2, "carried": True}]
+    second = extract._build_measure(geo, SYSTEM, (400., 760.), 1, [(415., "G")], warn,
+                                    (4, 4), extract.build_letter_index(geo), [],
+                                    pending_graces=pending)
+    graced = [(b["x"], n["string"]) for b in second["beats"] for n in b["notes"]
+              if n.get("grace_fret") == 2]
+    assert graced == [(420.0, 6)]

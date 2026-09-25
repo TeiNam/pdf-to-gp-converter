@@ -8,9 +8,11 @@ STEM_MARGIN = 35.0
 DOT_WINDOW = 10.0
 DOT_Y_TOLERANCE = 4.0
 # 빔 스택은 기둥 끝에서 시작해 일정 간격으로 쌓인다 — 줄 간격 비율로 잰다.
-# 실측: 첫 빔은 기둥 끝 0.1pt 안, 빔 사이 3.8pt (줄 간격 7.7 의 절반)
+# 실측: 첫 빔은 기둥 끝 0.1pt 안, 빔 사이 3.8pt (줄 간격 7.7 의 절반).
+# 빔 간격은 줄 간격보다 빔 굵기를 따른다 — 좁은 타브(6pt)의 이중 빔 5pt 도 받게
+# 한도를 넉넉히 둔다. 다른 음의 빔은 기둥에 닿지 않아 애초에 후보가 아니다
 BEAM_END_RATIO = 0.5
-BEAM_GAP_RATIO = 0.8
+BEAM_GAP_RATIO = 1.2
 
 
 def stems_for(geo, system, glyph):
@@ -241,7 +243,10 @@ def triplet_groups(geo, system, beat_xs, notes, bounds, fret_glyphs=()):
             start = min(range(max(1, len(beat_xs) - 2)), key=lambda i: abs(
                 (beat_xs[i] + beat_xs[min(i + 2, len(beat_xs) - 1)]) / 2 - mark.x))
             members = set(range(start, min(start + 3, len(beat_xs))))
-            members |= set(min(spans)[1]) if spans else set()
+            # 빔이 셋보다 적게 묶을 때만 합친다 — 셋잇단 밖의 음까지 덮는 긴 빔을
+            # 합치면 창이 넓어져 묶음이 표기에서 벗어난다
+            if spans and len(min(spans)[1]) < 3:
+                members |= set(min(spans)[1])
             windows.append(tuple(range(min(members), max(members) + 1)))
     taken = {i for group in forced for i in group}
     free = (_free_run(window, taken) for window in windows)

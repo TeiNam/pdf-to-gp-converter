@@ -5,7 +5,7 @@ PDF 를 모르는 순수 계산 모듈이다. 추출기가 확정한 음가는 �
 """
 
 from dataclasses import dataclass, field
-from functools import lru_cache
+from functools import cache, lru_cache
 from itertools import product
 from math import prod
 
@@ -376,7 +376,7 @@ def fit_timeline(props: list[float], target: float, spans: tuple[Span, ...],
         reach_high[i] = reach_high[i + 1] + max(units)
 
     # 캐시 상한을 두지 않는다 — 상태가 상한을 넘으면 밀려난 상태를 되풀어 폭증한다
-    @lru_cache(maxsize=None)
+    @cache
     def solve(index, remaining, pending):
         onset = target_units - remaining
         for stop, required, exact in pending:

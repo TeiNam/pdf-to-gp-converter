@@ -3,7 +3,7 @@
 좌표를 수집하는 geometry와 마디를 조립하는 extract 사이의 표기 해석을 맡는다.
 """
 
-from . import bands, chords, geometry, lyrics, rhythm, smufl
+from . import bands, chords, geometry, lyrics, marks, rhythm, smufl
 from .bands import CHORD_BAND_HEIGHT
 from .durations import REST_NAMES
 from .marks import ARTICULATION_KINDS
@@ -322,7 +322,7 @@ def _techniques(geo, system, x0, x1, fret_glyphs, letter_index,
     """연주법 표기를 (x, 대상 줄, 종류) 로 뽑는다.
 
     표기의 y 는 대상 줄과 무관하다 (실측: 표기 y 는 5·3·4·1번줄로 흩어지는데
-    대상은 전부 2번줄이었다). 표기 x 직전의 프렛 노트가 효과를 갖는다.
+    대상은 전부 2번줄이었다). 슬러로 연결된 음을 우선하고, 없으면 직전 음을 쓴다.
     """
     result = []
     for glyph in geo.glyphs:
@@ -333,10 +333,10 @@ def _techniques(geo, system, x0, x1, fret_glyphs, letter_index,
             continue
         if _has_adjacent_letter(letter_index, glyph):
             continue                    # 주석 문장 속 글자다
-        before = [f for f in [*fret_glyphs, *grace_glyphs] if f.x <= glyph.x]
-        if not before:
+        source = marks.technique_source(
+            geo, system, glyph, [*fret_glyphs, *grace_glyphs])
+        if source is None:
             continue
-        source = max(before, key=lambda f: f.x)
         string = _snap_to_string(source.y, system.tab_ys)
         if string is None:
             continue

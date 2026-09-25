@@ -176,9 +176,7 @@ def _voice_of_marks(geo, system, bounds, notes, rests, frets, graces, raw_digits
         if not x0 <= mark.x < x1 or mark in assigned:
             continue
         if mark.char in TECHNIQUE_GLYPHS and _in_tab_band(mark, system):
-            # 연주법은 표기 직전 음의 효과다 — 그 음의 성부를 따른다
-            source = max((n for n in frets + graces if n.x <= mark.x),
-                         key=lambda n: n.x, default=None)
+            source = marks.technique_source(geo, system, mark, frets + graces)
             assigned[mark] = assigned.get(source, 0)
         elif _is_voice_mark(mark, system, notes, raw_digits):
             triplet = rhythm.is_triplet_mark(mark, system, notes, raw_digits)

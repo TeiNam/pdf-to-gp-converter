@@ -6,7 +6,6 @@ PDF 를 모르는 순수 계산 모듈이다. 추출기가 확정한 음가는 �
 
 from dataclasses import dataclass
 from functools import lru_cache
-from itertools import product
 from math import prod
 
 EPSILON = 1e-9
@@ -199,15 +198,27 @@ EXHAUSTIVE_TRIPLET_CHOICES = 256
 def best_window_choice(options: list[list[frozenset[int]]], evaluate):
     """창마다 셋잇단 구간 하나를 골라 `evaluate` 가 가장 낮은 조합을 찾는다.
 
-    `evaluate(choice)` 는 (정렬 키, ...) 튜플을 돌려준다. 조합이 작으면 전부 보고
-    (두 창을 함께 바꿔야 맞는 해), 크면(창 여덟 개면 6561가지) 한 창씩 바꿔 보는
-    좌표 하강으로 찾는다.
+    `evaluate(셋잇단 인덱스 집합)`은 ((실패 여부, 비용), ...)을 돌려준다.
+    큰 조합은 한 창씩 먼저 바꾸되, 실패하면 함께 바꿔야 하는 조합도 확인한다.
+    여러 성부의 창이 같은 집합을 만들면 풀이 결과를 재사용한다.
     """
+    cached = lru_cache(maxsize=DP_CACHE_SIZE)(evaluate)
+
+    def trial(choice):
+        return cached(frozenset().union(*choice))
+
+    def exhaustive():
+        # 같은 시간축을 만드는 성부별 조합은 한 번만 센다 — 3^16개 조합도
+        # 동일한 창이 양쪽에 있으면 실제 선택은 3^8개뿐이다.
+        choices = [frozenset()]
+        for runs in options:
+            choices = list(dict.fromkeys(chosen | run for chosen in choices for run in runs))
+        return min(map(cached, choices), key=lambda result: result[0])
+
     if prod(len(runs) for runs in options) <= EXHAUSTIVE_TRIPLET_CHOICES:
-        return min((evaluate(list(choice)) for choice in product(*options)),
-                   key=lambda trial: trial[0])
+        return exhaustive()
     choice = [runs[0] for runs in options]
-    best = evaluate(choice)
+    best = trial(choice)
     improved = True
     while improved:
         improved = False
@@ -215,10 +226,12 @@ def best_window_choice(options: list[list[frozenset[int]]], evaluate):
             for run in runs:
                 if run == choice[position]:
                     continue
-                trial = evaluate(choice[:position] + [run] + choice[position + 1:])
-                if trial[0] < best[0]:
-                    best, choice[position], improved = trial, run, True
-    return best
+                candidate = trial(choice[:position] + [run] + choice[position + 1:])
+                if candidate[0] < best[0]:
+                    best, choice[position], improved = candidate, run, True
+    # ponytail: 실패한 큰 조합만 완전 탐색한다. 후보가 더 커져 병목이 되면
+    # 창 제약을 음가 DP에 합쳐, 닫힌 창의 선택을 풀이 상태에서 버린다.
+    return exhaustive() if best[0][0] else best
 
 
 def window_options(windows) -> list[list[frozenset[int]]]:
@@ -238,8 +251,8 @@ def fit_with_triplets(props: list[float], target: float,
 
     Returns: (스냅 결과, 합이 정확히 맞았는지, 셋잇단으로 푼 인덱스)
     """
-    def evaluate(choice):
-        tuplets = set(forced).union(*choice)
+    def evaluate(selected):
+        tuplets = set(forced) | selected
         pins = {i: as_triplet(p) if i in tuplets and p.tuplet is None else p
                 for i, p in pinned.items()}
         fitted, exact = fit_durations(props, target, pinned=pins, tuplet_indices=tuplets)

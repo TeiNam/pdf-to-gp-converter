@@ -269,10 +269,9 @@ def fit_timeline(props: list[float], target: float, constraints: _Constraints,
     if target_units is None:
         return [_nearest(p).quarters for p in props], False, set()
 
-    def evaluate(choice):
-        triplets = set(constraints.prefer).union(*choice)
-        plains = {k for window, run in zip(constraints.windows, choice)
-                  for k in window if k not in run} - triplets
+    def evaluate(selected):
+        triplets = set(constraints.prefer) | selected
+        plains = {k for window in constraints.windows for k in window} - triplets
         solution = _solve(props, target_units, constraints, triplets, plains)
         if solution is None:
             return (True, 0.0), [_nearest(p).quarters for p in props], False, triplets

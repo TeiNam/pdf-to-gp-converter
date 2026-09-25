@@ -125,6 +125,42 @@ def articulations(geo, system, x0, x1) -> list[tuple[geometry.Glyph, str]]:
     return result
 
 
+def technique_source(geo, system, mark, notes):
+    """H/P/S를 감싼 슬러의 줄에서 직전 음. 연결 근거가 없으면 기존 직전 음."""
+    before = [note for note in notes if note.x <= mark.x]
+    linked = []
+    spacing = (system.tab_ys[-1] - system.tab_ys[0]) / (len(system.tab_ys) - 1)
+    for curve in geo.curves:
+        middle = (curve.y0 + curve.y1) / 2
+        if not curve.x0 <= mark.x <= curve.x1:
+            continue
+        if abs(mark.y - middle) > TIE_ENDPOINT_TOLERANCE:
+            continue
+        for source in before:
+            string = bands.snap_to_string(source.y, system.tab_ys)
+            if string is None or abs(source.x - curve.x0) > TIE_ENDPOINT_TOLERANCE:
+                continue
+            y = system.tab_ys[string - 1]
+            if max(abs(curve.y0 - y), abs(curve.y1 - y)) > spacing:
+                continue
+            if curve.above is not None and (y < middle if curve.above else y > middle):
+                continue
+            # 다른 줄의 삽화·슬러를 빌리지 않는다 — 양 끝에 같은 줄의 음이 있어야 한다.
+            if not any(note.x > mark.x
+                       and abs(note.x - curve.x1) <= TIE_ENDPOINT_TOLERANCE
+                       and bands.snap_to_string(note.y, system.tab_ys) == string
+                       for note in notes):
+                continue
+            # 한 슬러의 3 H 5 P 3은 H와 P의 대상 음이 다르다.
+            previous = max((note for note in before
+                            if bands.snap_to_string(note.y, system.tab_ys) == string),
+                           key=lambda note: note.x)
+            linked.append((abs(mark.y - middle), abs(source.x - curve.x0), previous))
+    if linked:
+        return min(linked, key=lambda entry: entry[:2])[2]
+    return max(before, key=lambda note: note.x, default=None)
+
+
 def attach_graces(beats: list[dict], grace_glyphs, system, index, warn,
                   pending: list | None = None, techniques=()) -> list:
     """꾸밈음을 다음 음(같은 줄)에 붙인다. 못 붙인 것은 다음 마디로 넘긴다.

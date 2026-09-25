@@ -644,9 +644,9 @@ def _voice_of_marks(geo, system, bounds, notes, rests, frets, graces, raw_digits
                 continue            # 쉼표뿐인 마디의 악센트 — 걸 음이 없다
             # 셋잇단은 가장 가까운 음, 스트로크·아티큘레이션은 x 가 가장 가까운 음 —
             # 그 표기는 x 로 beat 에 붙으므로 y 가 더 가까운 다른 성부로 가면 사라진다
-            key = ((lambda n: math.hypot(n.x - mark.x, n.y - mark.y)) if triplet
-                   else (lambda n: (abs(n.x - mark.x), abs(n.y - mark.y))))
-            assigned[mark] = assigned[min(owners, key=key)]
+            distances = [(math.hypot(n.x - mark.x, n.y - mark.y),) if triplet
+                         else (abs(n.x - mark.x), abs(n.y - mark.y)) for n in owners]
+            assigned[mark] = assigned[owners[distances.index(min(distances))]]
 
 
 def _pending_voice(entry: dict, notes, assigned, system) -> int:

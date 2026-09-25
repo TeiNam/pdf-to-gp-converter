@@ -105,16 +105,18 @@ def _x_groups(notes, tolerance):
     return groups
 
 
-def voice_assignments(geo, system, notes, rests, tolerance=2.0):
+def voice_assignments(geo, system, notes, rests, target=4.0, tolerance=2.0):
     """한 마디의 음·쉼표를 두 성부로 나눈다. 단성부면 None.
 
     다성부 근거는 셋이다 — 같은 시각의 반대 방향 기둥, 음과 같은 x 의 쉼표,
-    음이 있는 마디의 온쉼표(한 성부 안에서 온쉼표와 음은 공존할 수 없다).
+    음이 있는 마디의 온쉼표(한 성부 안에서 온쉼표와 음은 공존할 수 없다 — 단
+    4박을 넘는 박자에서는 온쉼표가 마디 전체가 아니라 4박 쉼표다).
     한 성부의 기둥도 위아래로 바뀌므로 방향만으로는 판정하지 않는다.
     """
     directions = _stem_directions(geo, system, notes)
     groups = _x_groups(notes, tolerance)
-    whole_rests = [r for r in rests if smufl.name(r.char) == "restWhole"]
+    whole_rests = ([r for r in rests if smufl.name(r.char) == "restWhole"]
+                   if target <= 4.0 + durations.EPSILON else [])
     conflict = any(
         {directions[g] for g in group if g in directions} == {0, 1}
         for group in groups)

@@ -432,3 +432,121 @@ def test_triplet_mark_of_a_rest_only_voice_stays_there(tmp_path):
     assert [b.duration.tuplet.enters for b in lower.beats] == [3, 3, 3]
     assert voice_total(lower) == voice_total(upper) == 960
     assert not warn.items
+
+
+# --- 4라운드 교차 리뷰 재현 사례 ---
+
+def _flag(x, value, down=True):
+    """x 기둥 끝의 꼬리 글리프 (8분=1 … 64분=4)."""
+    code = 0xE240 + (value - 1) * 2 + (1 if down else 0)
+    return glyph(x + 2.5, 225 if down else 135, chr(code))
+
+
+def test_rest_floor_on_a_triplet_segment_does_not_crash():
+    """2/4: 윗 [8분, 점4분쉼표], 아래 빔 묶인 [16·8·점8] 셋잇단 + 생략 쉼표."""
+    lower = (60., 80., 120.)
+    geo = geometry.PageGeometry(
+        glyphs=[glyph(60, 160, "3"), glyph(120, 152, chr(0xE4E5)),
+                glyph(130, 150, chr(0xE1E7)),
+                *[glyph(x, 200, "0") for x in lower], glyph(80, 232, TUPLET),
+                _flag(60, 1, down=False)],
+        vlines=[*up_stems((60.,)), *down_stems(lower)],
+        beams=[geometry.Beam(62.5, 225, 122.5, 225)])
+    result, _ = measure(geo, bounds=(40., 280.), time_sig=(2, 4))
+    assert result["beats"]
+
+
+def test_whole_rest_in_six_four_is_a_four_beat_rest_not_a_voice():
+    xs = (300., 330., 360., 390.)
+    geo = geometry.PageGeometry(
+        glyphs=[glyph(60, 184, WHOLE_REST), *[glyph(x, 176, "0") for x in xs]],
+        vlines=[geometry.VLine(x + 2.5, 179, 225) for x in xs],
+        beams=[geometry.Beam(302.5, 225, 392.5, 225)])
+    result, warn = measure(geo, bounds=(40., 420.), time_sig=(6, 4))
+    assert {b.get("voice", 0) for b in result["beats"]} == {0}
+    assert [b["duration"] for b in result["beats"]] == [1, 8, 8, 8, 8]
+    assert not warn.items
+
+
+def test_overlapping_rest_spans_are_solved_together(tmp_path):
+    """2/4: 윗 [4분쉼표@60, 음@160], 아래 [8분@60, 4분쉼표@140, 8분@240]."""
+    geo = geometry.PageGeometry(
+        glyphs=[glyph(60, 152, chr(0xE4E5)), glyph(160, 160, "3"),
+                glyph(60, 200, "0"), glyph(140, 192, chr(0xE4E5)), glyph(240, 200, "2"),
+                _flag(60, 1), _flag(240, 1)],
+        vlines=[*up_stems((160.,)), *down_stems((60., 240.))])
+    result, warn = measure(geo, bounds=(40., 300.), time_sig=(2, 4))
+    upper, lower = round_trip(song_for([result]), tmp_path).tracks[0].measures[0].voices
+    assert voice_total(upper) == voice_total(lower) == 1920
+    assert not warn.items
+
+
+def test_shared_gap_may_be_a_sum_of_two_lengths(tmp_path):
+    """1/4: 윗 [점8, 16], 아래 [32, 점8, 32] — 공통 간격 0.625박이 생긴다."""
+    beat = 160.
+    def at(q):
+        return 60. + beat * q
+    upper = (at(0), at(0.75))
+    lower = (at(0), at(0.125), at(0.875))
+    geo = geometry.PageGeometry(
+        glyphs=[*[glyph(x, 160, "3") for x in upper], *[glyph(x, 200, "0") for x in lower],
+                _flag(upper[0], 1, down=False), _flag(upper[1], 2, down=False),
+                glyph(upper[0] + 6, 160, chr(0xE1E7)),
+                _flag(lower[0], 3), _flag(lower[1], 1), _flag(lower[2], 3),
+                glyph(lower[1] + 6, 200, chr(0xE1E7))],
+        vlines=[*up_stems(upper), *down_stems(lower)])
+    result, warn = measure(geo, bounds=(40., 60. + beat), time_sig=(1, 4))
+    upper_voice, lower_voice = round_trip(song_for([result]), tmp_path).tracks[0].measures[0].voices
+    assert [b.duration.time for b in upper_voice.beats] == [720, 240]
+    assert [b.duration.time for b in lower_voice.beats] == [120, 720, 120]
+    assert not warn.items
+
+
+def test_many_triplet_windows_find_the_exact_reading():
+    """4/4: 꼬리 16분 24개, 세 음마다 '3' — 창 조합이 폭발해도 정답을 찾는다."""
+    xs = [45. + 14 * i for i in range(24)]
+    geo = geometry.PageGeometry(
+        glyphs=[*[glyph(x, 176, "0") for x in xs], *[_flag(x, 2) for x in xs],
+                *[glyph(xs[i + 1], 232, TUPLET) for i in range(0, 24, 3)]],
+        vlines=[geometry.VLine(x + 2.5, 179, 225) for x in xs])
+    result, warn = measure(geo, bounds=(40., 45. + 14 * 24))
+    assert all(b["tuplet"] == [3, 2] for b in result["beats"])
+    assert not warn.items
+
+
+def test_tie_after_a_two_voice_pickup_refit():
+    """두 성부 픽업(8분 둘씩)의 윗성부 같은 프렛 타이.
+
+    타이는 박자표 재맞춤 전에 걸린다 — 그때 4/4 로 채운 쉼표가 두 음 사이에 끼면
+    인접하지 않은 것으로 보여 타이가 사라졌다.
+    """
+    xs = (45., 70.)
+    first = geometry.PageGeometry(
+        glyphs=[*[glyph(x, 160, "3") for x in xs], *[glyph(x, 200, "0") for x in xs]],
+        vlines=[*up_stems(xs), *down_stems(xs)],
+        beams=[geometry.Beam(47.5, 135, 72.5, 135), geometry.Beam(47.5, 225, 72.5, 225)],
+        curves=[geometry.Curve(48., 157., 69., 157., True)])
+    measures, warnings, left = [], [], 40.
+    for index, width in enumerate((50., 200., 200.)):
+        geo = first if index == 0 else geometry.PageGeometry(
+            glyphs=[glyph(left + x, 176, "0") for x in (5, 55, 105, 155)])
+        result, warn = measure(geo, bounds=(left, left + width), index=index)
+        if index == 0:
+            extract._apply_tie_curves(geo, SYSTEM, [result], warn)
+        measures.append(result)
+        warnings.extend(warn.items)
+        left += width
+    extract._adjust_boundary_measures(measures, extract._Warnings(warnings))
+    upper = [b for b in measures[0]["beats"] if b["voice"] == 0 and b["notes"]]
+    assert measures[0]["time_sig"] == [1, 4]
+    assert upper[1]["notes"][0].get("tie") is True
+
+
+def test_accent_is_not_given_to_the_rest_voice():
+    geo = geometry.PageGeometry(
+        glyphs=[*[glyph(x, 160, "3") for x in (60., 150., 240., 330.)],
+                glyph(60, 184, QUARTER_REST), glyph(61, 175, chr(0xE4A1))])
+    result, _ = measure(geo)
+    accented = [b for b in result["beats"]
+                if any(t["kind"] == "accent" for t in b["techniques"])]
+    assert [(b["x"], b["voice"], bool(b["notes"])) for b in accented] == [(60.0, 0, True)]

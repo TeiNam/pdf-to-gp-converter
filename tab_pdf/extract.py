@@ -625,9 +625,11 @@ def _voice_of_marks(geo, system, bounds, notes, rests, frets, graces, raw_digits
                 voices = [assigned[n] for n in held]
                 assigned[mark] = max(set(voices), key=voices.count)
                 continue
-            # 쉼표도 후보다 — 쉼표뿐인 성부의 셋잇단 '3' 이 음 쪽 성부로 가면 안 된다
-            nearest = min(notes + rests,
-                          key=lambda n: math.hypot(n.x - mark.x, n.y - mark.y))
+            # 셋잇단 '3' 은 쉼표도 후보다 — 쉼표뿐인 성부의 '3' 이 음 쪽 성부로 가면
+            # 안 된다. 악센트·스트로크는 음에만 걸린다 (쉼표 성부로 가면 사라진다)
+            owners = (notes + rests if rhythm.is_triplet_mark(mark, system, notes, raw_digits)
+                      else notes)
+            nearest = min(owners, key=lambda n: math.hypot(n.x - mark.x, n.y - mark.y))
             assigned[mark] = assigned[nearest]
 
 
@@ -657,7 +659,8 @@ def _polyphonic_measure(geo, system, bounds, index, tokens, warn, time_sig,
         g for g in geo.glyphs if x0 <= g.x < x1
         and _in_range(g.char, SMUFL_SLASH_RANGE) and _in_tab_band(g, system)]
     rests = _rest_glyphs(geo, system, x0, x1)
-    assigned = rhythm.voice_assignments(geo, system, notes, rests)
+    assigned = rhythm.voice_assignments(geo, system, notes, rests,
+                                        durations.target_quarters(*time_sig))
     if assigned is None:
         return None
     assigned.update((raw, assigned[merged]) for raw, merged in sources.items())
@@ -708,6 +711,7 @@ def _assemble_voices(measure: dict, target: float, warn: _Warnings) -> None:
         for order, (event, duration) in enumerate(slots):
             if event is None:
                 beat = _rest_beat(x, duration)      # 생략된 쉼표를 채운다
+                beat["fill"] = True                 # 타이 인접성 판정에서 뺀다
             else:
                 beat = beats[event]                 # 타이가 붙은 같은 객체를 다시 쓴다
                 beat.update(_duration_fields(duration))

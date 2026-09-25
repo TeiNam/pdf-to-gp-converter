@@ -183,7 +183,10 @@ def apply_tie_curves(geo, system, system_measures: list[dict], warn) -> None:
     ponytail: 시스템 경계 타이는 미지원 — 필요해지면 시스템 끝/시작 반쪽
     호를 짝짓는다.
     """
-    beats = [beat for measure in system_measures for beat in measure["beats"]]
+    # 채움 쉼표는 표기에 없는 자리다 — 두 음을 떼어 놓는 쉼표로 보지 않는다.
+    # (못갖춘마디 재맞춤 전의 긴 박자표가 넣은 쉼표가 타이를 끊었다)
+    beats = [beat for measure in system_measures for beat in measure["beats"]
+             if not beat.get("fill")]
     owner = {id(beat): measure["index"] for measure in system_measures
              for beat in measure["beats"]}
     # 성부 표시가 없는 beat 은 단성부 마디다 — 호가 어느 성부에서 넘어와도 찾는다.

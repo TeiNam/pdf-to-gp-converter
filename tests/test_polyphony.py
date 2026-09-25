@@ -558,7 +558,8 @@ def _pinned_voice(events, y, down):
     """(x, 박 길이) 목록을 꼬리·점으로 고정한 음으로 그린다."""
     glyphs, stems = [], []
     flags = {0.125: (3, False), 0.25: (2, False), 0.5: (1, False),
-             0.75: (1, True), 0.375: (2, True), 0.1875: (3, True)}
+             0.75: (1, True), 0.375: (2, True), 0.1875: (3, True),
+             0.0625: (4, False), 0.09375: (4, True)}
     for x, length in events:
         count, dotted = flags[length]
         glyphs.append(glyph(x, y, "0"))
@@ -614,3 +615,80 @@ def test_triplet_windows_that_must_change_together():
         [1 / 3] * 6, 2.0, pins, set(), [(0, 1, 2), (3, 4, 5)])
     assert exact
     assert abs(sum(d.quarters for d in fitted) - 2.0) < durations.EPSILON
+
+
+# --- 6라운드 교차 리뷰 재현 사례 ---
+
+def test_explicit_triplets_survive_in_both_voices(tmp_path):
+    """두 성부 모두 [8분 셋잇단 셋 + 8분 여섯], 각 성부에 '3' — 셋잇단을 버리지 않는다."""
+    beat = 90.
+    xs = [60., 90., 120.] + [150. + beat / 2 * i for i in range(6)]
+    geo = geometry.PageGeometry(
+        glyphs=[*[glyph(x, 160, "3") for x in xs], *[glyph(x, 200, "0") for x in xs],
+                *[_flag(x, 1, down=False) for x in xs], *[_flag(x, 1) for x in xs],
+                glyph(90, 128, TUPLET), glyph(90, 232, TUPLET)],
+        vlines=[*up_stems(xs), *down_stems(xs)])
+    result, warn = measure(geo, bounds=(40., 60. + beat * 4))
+    upper, lower = round_trip(song_for([result]), tmp_path).tracks[0].measures[0].voices
+    assert [b.duration.time for b in upper.beats][:3] == [320] * 3
+    assert [b.duration.time for b in lower.beats][:3] == [320] * 3
+    assert voice_total(upper) == voice_total(lower) == BAR
+    assert not warn.items
+
+
+def test_dotted_sixty_fourth_is_a_shared_timeline_value(tmp_path):
+    upper_g, upper_s = _pinned_voice([(60, .09375), (72, .09375), (84, .0625), (92, .75)],
+                                     160, False)
+    lower_g, lower_s = _pinned_voice([(60, .25), (92, .75)], 200, True)
+    geo = geometry.PageGeometry(glyphs=upper_g + lower_g, vlines=upper_s + lower_s)
+    result, warn = measure(geo, bounds=(40., 188.), time_sig=(1, 4))
+    assert onset_at(result, 0, 92.) == onset_at(result, 1, 92.) == 0.25
+    upper, lower = round_trip(song_for([result]), tmp_path).tracks[0].measures[0].voices
+    assert voice_total(upper) == voice_total(lower) == 960
+    assert not warn.items
+
+
+def test_dotted_eighth_triplet_is_half_a_beat(tmp_path):
+    """1/4: [점8분, 16분, 8분] 셋잇단 — 480·160·320 tick."""
+    xs = (60., 140., 166.6667)
+    geo = geometry.PageGeometry(
+        glyphs=[*[glyph(x, 176, "0") for x in xs],
+                _flag(xs[0], 1), glyph(xs[0] + 6, 176, chr(0xE1E7)), _flag(xs[1], 2),
+                _flag(xs[2], 1), glyph(140, 232, TUPLET)],
+        vlines=[geometry.VLine(x + 2.5, 179, 225) for x in xs])
+    result, warn = measure(geo, bounds=(40., 220.), time_sig=(1, 4))
+    song = round_trip(song_for([result]), tmp_path)
+    assert [b.duration.time for b in song.tracks[0].measures[0].voices[0].beats] == [480, 160, 320]
+    assert not warn.items
+
+
+def test_rest_span_needing_a_far_composite_gap(tmp_path):
+    """4/4: 윗 [점2분쉼표@60, 음@90], 아래 [64분@60, 점2분쉼표@70, 점8분@100, 점32분@350]."""
+    lower_g, lower_s = _pinned_voice([(100, .75), (350, .1875)], 200, True)
+    geo = geometry.PageGeometry(
+        glyphs=[glyph(60, 152, chr(0xE4E4)), glyph(66, 152, chr(0xE1E7)), glyph(90, 160, "3"),
+                glyph(60, 200, "0"), _flag(60, 4),
+                glyph(70, 192, chr(0xE4E4)), glyph(76, 192, chr(0xE1E7)), *lower_g],
+        vlines=[*up_stems((90.,)), *down_stems((60.,)), *lower_s])
+    result, warn = measure(geo, bounds=(40., 420.))
+    upper, lower = round_trip(song_for([result]), tmp_path).tracks[0].measures[0].voices
+    assert voice_total(upper) == voice_total(lower) == BAR
+    assert not warn.items
+
+
+def test_dense_twelve_eight_two_voices_is_fast(tmp_path):
+    """12/8: 윗 8분 12개, 아래 16분 + 8분 11개 + 16분 — x 는 시간에 비례."""
+    import time
+    per_beat = 40.
+    upper = [(60. + per_beat * 0.5 * i, .5) for i in range(12)]
+    lower = ([(60., .25)] + [(60. + per_beat * (0.25 + 0.5 * i), .5) for i in range(11)]
+             + [(60. + per_beat * 5.75, .25)])
+    upper_g, upper_s = _pinned_voice(upper, 160, False)
+    lower_g, lower_s = _pinned_voice(lower, 200, True)
+    geo = geometry.PageGeometry(glyphs=upper_g + lower_g, vlines=upper_s + lower_s)
+    started = time.perf_counter()
+    result, warn = measure(geo, bounds=(40., 60. + per_beat * 6), time_sig=(12, 8))
+    assert time.perf_counter() - started < 1.0
+    up, low = round_trip(song_for([result]), tmp_path).tracks[0].measures[0].voices
+    assert voice_total(up) == voice_total(low) == BAR * 3 // 2
+    assert not warn.items

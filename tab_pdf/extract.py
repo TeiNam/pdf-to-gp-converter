@@ -11,7 +11,18 @@ from dataclasses import dataclass, field, replace
 
 import pymupdf
 
-from . import bands, chords, durations, geometry, header, lyrics, marks, rhythm, smufl
+from . import (
+    bands,
+    chords,
+    durations,
+    geometry,
+    header,
+    lyrics,
+    marks,
+    rhythm,
+    smufl,
+    timeline,
+)
 from .bands import CHORD_BAND_HEIGHT
 from .durations import REST_DURATIONS, REST_NAMES
 from .header import STANDARD_TUNING
@@ -703,7 +714,7 @@ def _polyphonic_measure(geo, system, bounds, index, tokens, warn, time_sig,
 def _assemble_voices(measure: dict, target: float, warn: _Warnings) -> None:
     """성부별 이벤트를 공통 시간축에 올려 beat 목록과 주석 인덱스를 만든다."""
     fit = measure["_fit"]
-    alignment = durations.align_voices(
+    alignment = timeline.align_voices(
         fit["events"], fit["x1"], target, BEAT_CLUSTER_TOLERANCE)
     entries = []
     for voice, (slots, beats) in enumerate(zip(alignment.slots, fit["event_beats"])):
@@ -961,7 +972,7 @@ def _build_measure(geo, system, bounds, index, tokens, warn,
         "pins_fill": bool(beat_xs) and len(known_pins) == len(beat_xs) and exact,
     }
     if _voice is not None:
-        measure["_fit"]["events"] = durations.VoiceEvents(
+        measure["_fit"]["events"] = timeline.VoiceEvents(
             xs=tuple(beat_xs), pins=dict(known_pins),
             rests=frozenset(rest_positions), tuplets=frozenset(tuplet_indices),
             triplet_windows=tuple(windows), whole_rest=full_measure_rest)

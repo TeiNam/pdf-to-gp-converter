@@ -177,12 +177,13 @@ def mark_beam_notes(geo, system, mark, notes):
 def is_triplet_mark(mark, system, notes=(), fret_glyphs=()) -> bool:
     """타브의 셋잇단 표기 — SMuFL '3' 또는 음이 아닌 텍스트 '3'.
 
-    아래 기둥 성부의 '3' 은 기둥 끝 너머(타브 대역 밖)에 찍힌다. 위쪽은 오선이
-    가까워 타브 대역까지만 받는다 — 오선 선율의 잇단음표가 섞이면 안 된다.
+    위·아래 기둥 성부의 '3' 은 기둥 끝 너머(타브 대역 밖)에 찍힌다. 위로는 오선
+    바로 아래까지만 받는다 — 오선 선율의 잇단음표가 섞이면 안 된다.
     """
     if mark.char == chr(0xE883):
-        return (system.tab_ys[0] - bands.TAB_BAND_MARGIN <= mark.y
-                <= system.tab_ys[-1] + STEM_MARGIN)
+        top = max(system.melody_ys[-1] + bands.SPAN_SLACK,
+                  system.tab_ys[0] - STEM_MARGIN)
+        return top <= mark.y <= system.tab_ys[-1] + STEM_MARGIN
     return (mark.char == "3" and mark not in notes and mark not in fret_glyphs
             and system.tab_ys[0] - STEM_MARGIN <= mark.y
             <= system.tab_ys[-1] + STEM_MARGIN)

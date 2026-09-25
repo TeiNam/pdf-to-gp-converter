@@ -328,7 +328,12 @@ def test_grace_before_barline_reaches_the_next_measures_lower_voice():
     assert not [w for w in warn.items if w["kind"] == "grace_dropped"]
 
 
-def test_tie_survives_a_polyphonic_to_monophonic_barline(tmp_path):
+def test_tie_across_voices_is_reported_not_faked(tmp_path):
+    """GP5 타이는 같은 성부의 앞 음을 잇는다 — 성부를 건너면 프렛이 0 으로 바뀐다.
+
+    아랫성부(두 성부 마디) → 단성부(첫 성부) 로 이어지는 호는 타이로 걸지 않고
+    경고한다. 다시 치는 편이 엉뚱한 음으로 이어지는 것보다 낫다.
+    """
     geo = geometry.PageGeometry(
         glyphs=[*[glyph(x, 160, "3") for x in (60., 150., 240., 330.)],
                 glyph(60, 200, "5"), glyph(420, 200, "5")],
@@ -340,4 +345,90 @@ def test_tie_survives_a_polyphonic_to_monophonic_barline(tmp_path):
     measures = [extract._build_measure(geo, SYSTEM, bounds, i, [], warn, (4, 4), letters, [])
                 for i, bounds in enumerate(((40., 400.), (400., 760.)))]
     extract._apply_tie_curves(geo, SYSTEM, measures, warn)
-    assert measures[1]["beats"][0]["notes"][0].get("tie") is True
+    song = round_trip(song_for(measures), tmp_path)
+    note = song.tracks[0].measures[1].voices[0].beats[0].notes[0]
+    assert (note.value, note.type) == (5, gp.models.NoteType.normal)
+    assert [w["kind"] for w in warn.items] == ["tie_across_voices"]
+
+
+def test_other_voice_triplets_do_not_shorten_plain_eighths(tmp_path):
+    """1/4: 윗성부 꼬리 달린 8분 둘, 아랫성부 빔 묶인 16분 셋잇단 여섯."""
+    lower = (45., 65., 85., 105., 125., 145.)
+    upper = (45., 105.)
+    beams = [geometry.Beam(x0 + 2.5, y, x1 + 2.5, y)
+             for x0, x1 in ((45., 85.), (105., 145.)) for y in (225., 221.2)]
+    geo = geometry.PageGeometry(
+        glyphs=[*[glyph(x, 200, "0") for x in lower], *[glyph(x, 160, "3") for x in upper],
+                *[glyph(x + 2.5, 135, FLAG_8TH_UP) for x in upper],
+                glyph(65, 232, TUPLET), glyph(125, 232, TUPLET)],
+        vlines=[*down_stems(lower), *up_stems(upper)], beams=beams)
+    result, warn = measure(geo, bounds=(40., 160.), time_sig=(1, 4))
+    upper_voice, lower_voice = round_trip(song_for([result]), tmp_path).tracks[0].measures[0].voices
+    assert [b.duration.time for b in upper_voice.beats] == [480, 480]
+    assert [b.duration.tuplet.enters for b in lower_voice.beats] == [3] * 6
+    assert voice_total(lower_voice) == 960
+    assert not warn.items
+
+
+def test_rest_inside_a_triplet_window_is_a_triplet_rest():
+    """아랫성부 [8분쉼표, 꼬리 8분, 8분] + '3' — 두 음은 1/3·2/3 박에 시작한다."""
+    geo = geometry.PageGeometry(
+        glyphs=[*[glyph(x, 160, "3") for x in (60., 150., 240., 330.)],
+                glyph(60, 192, chr(0xE4E6)), glyph(90, 200, "0"), glyph(120, 200, "2"),
+                glyph(92.5, 225, FLAG_8TH_DOWN), glyph(90, 222, TUPLET)],
+        vlines=[*up_stems((60., 150., 240., 330.)), *down_stems((90., 120.))])
+    result, warn = measure(geo)
+    assert abs(onset_at(result, 1, 90.) - 1 / 3) < 1e-9
+    assert abs(onset_at(result, 1, 120.) - 2 / 3) < 1e-9
+    assert not warn.items
+
+
+def test_triplet_filled_measure_is_not_shortened_as_a_pickup():
+    xs = [45. + 10 * i for i in range(9)]
+    geo = geometry.PageGeometry(
+        glyphs=[*[glyph(x, 176, "0") for x in xs],
+                *[glyph(x + 2.5, 225, FLAG_8TH_DOWN) for x in xs], glyph(55, 222, TUPLET)],
+        vlines=[geometry.VLine(x + 2.5, 179, 225) for x in xs])
+    measures, warn = _pickup_run(geo, 100.)
+    assert measures[0]["time_sig"] == [4, 4]
+    assert not warn.items
+
+
+def test_unanchored_rest_still_constrains_the_shared_timeline(tmp_path):
+    """아랫성부 [8분, 2분쉼표, 8분] — 쉼표 양 끝 시각을 몰라도 2박 제약은 지킨다."""
+    upper_xs = (60., 210., 250., 290.)
+    geo = geometry.PageGeometry(
+        glyphs=[*[glyph(x, 160, "3") for x in upper_xs],
+                glyph(60, 200, "0"), glyph(210, 192, chr(0xE4E4)), glyph(290, 200, "2"),
+                *[glyph(x + 2.5, 225, FLAG_8TH_DOWN) for x in (60., 290.)]],
+        vlines=[*up_stems(upper_xs), *down_stems((60., 290.))])
+    result, warn = measure(geo)
+    assert onset_at(result, 0, 290.) == onset_at(result, 1, 290.)
+    upper, lower = round_trip(song_for([result]), tmp_path).tracks[0].measures[0].voices
+    assert voice_total(upper) == voice_total(lower) == BAR
+    assert not warn.items
+
+
+def test_last_rest_length_is_kept_exactly(tmp_path):
+    lower_xs = (60., 110., 160., 210., 260., 310., 360.)
+    geo = geometry.PageGeometry(
+        glyphs=[glyph(60, 160, "3"), *[glyph(x, 200, "0") for x in lower_xs],
+                *[glyph(x + 2.5, 225, FLAG_8TH_DOWN) for x in lower_xs],
+                glyph(390, 192, chr(0xE4E6))],
+        vlines=[*up_stems((60.,)), *down_stems(lower_xs)])
+    result, warn = measure(geo)
+    _, lower = round_trip(song_for([result]), tmp_path).tracks[0].measures[0].voices
+    assert voice_total(lower) == BAR
+    assert not warn.items
+
+
+def test_triplet_mark_of_a_rest_only_voice_stays_there(tmp_path):
+    geo = geometry.PageGeometry(
+        glyphs=[glyph(60, 160, "3"), *[glyph(x, 192, chr(0xE4E6)) for x in (60., 90., 120.)],
+                glyph(90, 206, TUPLET)],
+        vlines=up_stems((60.,)))
+    result, warn = measure(geo, bounds=(40., 160.), time_sig=(1, 4))
+    upper, lower = round_trip(song_for([result]), tmp_path).tracks[0].measures[0].voices
+    assert [b.duration.tuplet.enters for b in lower.beats] == [3, 3, 3]
+    assert voice_total(lower) == voice_total(upper) == 960
+    assert not warn.items

@@ -183,11 +183,10 @@ def page_scale(hlines: list[HLine], glyphs: list[Glyph]) -> float:
     if abs(scale - 1.0) < SCALE_TOLERANCE:
         return 1.0
     sizes = Counter(g.size for g in glyphs if g.char.isdigit())
-    if sizes:
-        digit_scale = sizes.most_common(1)[0][0] / REFERENCE_DIGIT_SIZE
-        if abs(digit_scale / scale - 1.0) > SCALE_AGREEMENT:
-            return 1.0
-    return scale
+    if not sizes:
+        return 1.0      # 확인할 숫자가 없다 — 조판 차이일 수 있어 건드리지 않는다
+    digit_scale = sizes.most_common(1)[0][0] / REFERENCE_DIGIT_SIZE
+    return scale if abs(digit_scale / scale - 1.0) <= SCALE_AGREEMENT else 1.0
 
 
 def _normalized(geo: PageGeometry, scale: float) -> PageGeometry:

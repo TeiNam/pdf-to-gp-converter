@@ -184,14 +184,19 @@ def apply_tie_curves(geo, system, system_measures: list[dict], warn) -> None:
     호를 짝짓는다.
     """
     beats = [beat for measure in system_measures for beat in measure["beats"]]
-    # 성부 표시가 없는 beat 은 단성부 마디다 — 어느 성부의 타이든 이어받는다
-    # (두 성부 마디의 아랫성부가 다음 단성부 마디로 이어지는 타이)
+    owner = {id(beat): measure["index"] for measure in system_measures
+             for beat in measure["beats"]}
+    # 성부 표시가 없는 beat 은 단성부 마디다 — 호가 어느 성부에서 넘어와도 찾는다.
+    # 하지만 GP5 타이는 같은 성부의 앞 음을 잇는다: 두 성부 마디의 아랫성부에서
+    # 단성부(첫 성부)로 넘어가는 타이를 걸면 GP 가 첫 성부의 앞 음(없으면 0프렛)을
+    # 이어 버린다. 그런 호는 걸지 않고 경고한다
     for voice in sorted({beat.get("voice", 0) for beat in beats}):
         _apply_voice_ties(geo, system, [b for b in beats
-                                        if b.get("voice", voice) == voice])
+                                        if b.get("voice", voice) == voice],
+                          warn, owner)
 
 
-def _apply_voice_ties(geo, system, beats):
+def _apply_voice_ties(geo, system, beats, warn, owner):
     if not beats:
         return
     low = system.tab_ys[0] - bands.TAB_BAND_MARGIN
@@ -211,6 +216,11 @@ def _apply_voice_ties(geo, system, beats):
         shared = ({(n["string"], n["fret"]) for n in beats[left]["notes"]}
                   & {(n["string"], n["fret"]) for n in beats[right]["notes"]})
         if not shared:
+            continue
+        if beats[left].get("voice", 0) != beats[right].get("voice", 0):
+            warn.add(owner[id(beats[right])], "tie_across_voices",
+                     f"x={beats[right]['x']:.1f} 타이가 다른 성부의 음을 잇는다 "
+                     f"— GP5 는 성부를 건너 타이를 걸 수 없어 다시 친다")
             continue
         # 슬래시 하나가 화음 전체를 나타낼 때만 모든 구성음에 타이를 건다.
         if not (beats[left].get("from_chord") and beats[right].get("from_chord")):

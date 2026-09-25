@@ -146,3 +146,11 @@ def test_narrow_tab_staff_is_not_mistaken_for_a_shrunken_page(tmp_path):
     doc.close()
     ir = extract.extract_ir(str(path), tempo=80)
     assert [[n["fret"] for n in b["notes"]] for b in ir["measures"][0]["beats"]] == [[5]] * 4
+
+
+def test_page_without_digits_is_not_rescaled():
+    """숫자가 없으면 선 간격만으로는 배율인지 조판인지 가를 수 없다 — 건드리지 않는다."""
+    from tab_pdf import geometry
+    ys = [100. + 5 * i for i in range(5)] + [150. + 6 * i for i in range(6)]
+    hlines = [geometry.HLine(y, 40., 400.) for y in ys]
+    assert geometry.page_scale(hlines, []) == 1.0

@@ -598,7 +598,7 @@ def _is_voice_mark(glyph, system, notes, digits) -> bool:
         or glyph.char in (SMUFL_STROKE_DOWN, SMUFL_STROKE_UP))
 
 
-def _voice_of_marks(geo, system, bounds, notes, frets, graces, raw_digits,
+def _voice_of_marks(geo, system, bounds, notes, rests, frets, graces, raw_digits,
                     assigned) -> None:
     """꾸밈음·연주법·셋잇단·아티큘레이션·스트로크를 음의 성부에 배정한다."""
     x0, x1 = bounds
@@ -625,7 +625,9 @@ def _voice_of_marks(geo, system, bounds, notes, frets, graces, raw_digits,
                 voices = [assigned[n] for n in held]
                 assigned[mark] = max(set(voices), key=voices.count)
                 continue
-            nearest = min(notes, key=lambda n: math.hypot(n.x - mark.x, n.y - mark.y))
+            # 쉼표도 후보다 — 쉼표뿐인 성부의 셋잇단 '3' 이 음 쪽 성부로 가면 안 된다
+            nearest = min(notes + rests,
+                          key=lambda n: math.hypot(n.x - mark.x, n.y - mark.y))
             assigned[mark] = assigned[nearest]
 
 
@@ -654,13 +656,13 @@ def _polyphonic_measure(geo, system, bounds, index, tokens, warn, time_sig,
     notes = frets + _dead_glyphs(geo, system, x0, x1) + [
         g for g in geo.glyphs if x0 <= g.x < x1
         and _in_range(g.char, SMUFL_SLASH_RANGE) and _in_tab_band(g, system)]
-    assigned = rhythm.voice_assignments(
-        geo, system, notes, _rest_glyphs(geo, system, x0, x1))
+    rests = _rest_glyphs(geo, system, x0, x1)
+    assigned = rhythm.voice_assignments(geo, system, notes, rests)
     if assigned is None:
         return None
     assigned.update((raw, assigned[merged]) for raw, merged in sources.items())
-    _voice_of_marks(geo, system, bounds, notes, frets, graces, raw_frets + graces,
-                    assigned)
+    _voice_of_marks(geo, system, bounds, notes, rests, frets, graces,
+                    raw_frets + graces, assigned)
     _warn_unsupported(geo, system, x0, x1, index, warn)
     pending_voices = [_pending_voice(g, notes, assigned, system)
                       for g in pending_graces or []]
@@ -730,7 +732,13 @@ def _assemble_voices(measure: dict, target: float, warn: _Warnings) -> None:
             annotations[key] = mapped
     measure["glyphs"] = list(annotations.values())
     fit["beat_xs"] = list(alignment.union_xs)
-    fit["pins"] = alignment.union_pins
+    # 한 성부가 확정 음가만으로(채움 쉼표 없이) 마디를 채웠는가 — 못갖춘마디 보호
+    fit["pins_fill"] = any(
+        voice.whole_rest or (
+            voice.xs and len(voice.pins) == len(voice.xs)
+            and all(event is not None for event, _ in slots)
+            and abs(sum(d.quarters for _, d in slots) - target) < durations.EPSILON)
+        for voice, slots in zip(fit["events"], alignment.slots))
     if not alignment.exact:
         warn.add(measure["index"], "duration_mismatch",
                  f"두 성부를 목표 {target:.3f}박에 맞추지 못했다"
@@ -945,6 +953,8 @@ def _build_measure(geo, system, bounds, index, tokens, warn,
         "tuplet_indices": tuplet_indices,
         "triplet_windows": windows,
         "full_measure_rest": full_measure_rest,
+        # 확정 음가만으로 박자표를 채웠다 — 셋잇단 창을 푼 뒤의 합으로 본다
+        "pins_fill": bool(beat_xs) and len(known_pins) == len(beat_xs) and exact,
     }
     if _voice is not None:
         measure["_fit"]["events"] = durations.VoiceEvents(
@@ -1000,17 +1010,6 @@ def _refit_measure(measure: dict, numerator: int, denominator: int,
                  f"합 {total:.3f} / 목표 {target:.3f} (픽업 재맞춤)")
 
 
-def _pins_fill(fit: dict, target: float) -> bool:
-    """확정 음가만으로 마디가 찬다 — 단성부든, 두 성부 중 한 성부든."""
-    def complete(xs, pins) -> bool:
-        return (bool(xs) and len(pins) == len(xs) and abs(
-            sum(d.quarters for d in pins.values()) - target) < durations.EPSILON)
-    if "events" in fit:
-        return any(voice.whole_rest or complete(voice.xs, voice.pins)
-                   for voice in fit["events"])
-    return complete(fit["beat_xs"], fit["pins"])
-
-
 def _adjust_boundary_measures(measures: list[dict], warn: _Warnings) -> None:
     """첫·끝 마디가 박자표보다 확실히 짧으면 못갖춘마디로 보고 박자표를 줄인다.
 
@@ -1037,7 +1036,7 @@ def _adjust_boundary_measures(measures: list[dict], warn: _Warnings) -> None:
         if fit["full_measure_rest"]:
             continue                 # 온쉼표는 가운데 놓여도 마디 전체다
         target = durations.target_quarters(*measure["time_sig"])
-        if _pins_fill(fit, target):
+        if fit["pins_fill"]:
             continue                 # 확정 음가가 채운 마디를 폭으로 줄이지 않는다
         estimated = _measure_span(measure) / scale
         if estimated >= PICKUP_MAX_RATIO * target:

@@ -618,8 +618,23 @@ def _voice_of_marks(geo, system, bounds, notes, frets, graces, raw_digits,
                          key=lambda n: n.x, default=None)
             assigned[mark] = assigned.get(source, 0)
         elif _is_voice_mark(mark, system, notes, raw_digits):
+            # 셋잇단 '3' 은 자기 빔이 묶은 음의 성부다 — 거리로 고르면 빔 반대편
+            # 성부의 음이 더 가까울 때 남의 셋잇단이 된다
+            held = rhythm.mark_beam_notes(geo, system, mark, notes)
+            if held:
+                voices = [assigned[n] for n in held]
+                assigned[mark] = max(set(voices), key=voices.count)
+                continue
             nearest = min(notes, key=lambda n: math.hypot(n.x - mark.x, n.y - mark.y))
             assigned[mark] = assigned[nearest]
+
+
+def _pending_voice(entry: dict, notes, assigned, system) -> int:
+    """앞 마디에서 넘어온 꾸밈음은 이 마디에서 그 줄의 첫 음이 가진 성부로 간다."""
+    same_string = [n for n in notes
+                   if _snap_to_string(n.y, system.tab_ys) == entry["string"]]
+    first = min(same_string, key=lambda n: n.x, default=None)
+    return assigned.get(first, 0)
 
 
 def _polyphonic_measure(geo, system, bounds, index, tokens, warn, time_sig,
@@ -647,6 +662,8 @@ def _polyphonic_measure(geo, system, bounds, index, tokens, warn, time_sig,
     _voice_of_marks(geo, system, bounds, notes, frets, graces, raw_frets + graces,
                     assigned)
     _warn_unsupported(geo, system, x0, x1, index, warn)
+    pending_voices = [_pending_voice(g, notes, assigned, system)
+                      for g in pending_graces or []]
     parts = []
     for voice in (0, 1):
         part_geo = replace(geo, glyphs=[g for g in geo.glyphs
@@ -654,11 +671,9 @@ def _polyphonic_measure(geo, system, bounds, index, tokens, warn, time_sig,
         part = _build_measure(
             part_geo, system, bounds, index, tokens, warn, time_sig,
             letter_index, syllables if voice == 0 else [],
-            carried_chord, pending_row_chord if voice == 0 else None,
-            [g for g in (pending_graces or []) if g.get("voice", 0) == voice],
+            carried_chord, None,
+            [g for g, v in zip(pending_graces or [], pending_voices) if v == voice],
             tuning, _voice=voice)
-        for entry in part.get("pending_graces", []):
-            entry["voice"] = voice
         parts.append(part)
     merged = parts[0]
     merged["kind"] = _classify(
@@ -673,6 +688,10 @@ def _polyphonic_measure(geo, system, bounds, index, tokens, warn, time_sig,
                         for entry in p["glyphs"]],
     }
     _assemble_voices(merged, durations.target_quarters(*time_sig), warn)
+    # 코드 행은 두 성부를 합친 순서로 배정한다 — 첫 성부가 쉬는 자리의 코드가
+    # 다음 첫 성부 음으로 밀리지 않고, 두 성부에 겹쳐 붙지도 않는다
+    merged["pending_row_chord"] = _assign_row_chords(
+        merged["beats"], tokens, bounds, index, warn, tuning, pending=pending_row_chord)
     return merged
 
 
@@ -832,15 +851,14 @@ def _build_measure(geo, system, bounds, index, tokens, warn,
     # 타브의 표기 묶음만 셋잇단으로 푼다. 오선 표기만 있는 경우에는
     # 모든 타브 음가와 빔 묶음이 확정되고 마디 합을 유일하게 맞출 때만 보완한다.
     target = durations.target_quarters(*time_sig)
-    groups, open_tuplets = rhythm.triplet_groups(
+    groups, windows = rhythm.triplet_groups(
         geo, system, beat_xs, note_glyphs, bounds, raw_fret_glyphs + raw_grace_glyphs)
-    if not groups and not open_tuplets:
+    if not groups and not windows:
         shared = rhythm.shared_triplet_group(
             geo, system, beat_xs, note_glyphs, bounds, known_pins, target)
         if shared:
             groups = [shared]
     tuplet_indices = {i for group in groups for i in group}
-    allow_tuplets = bool(tuplet_indices or open_tuplets)
     for position in tuplet_indices & known_pins.keys():
         known_pins[position] = durations.as_triplet(known_pins[position])
     # 온쉼표 하나뿐인 마디는 놓인 x 와 무관하게 박자표 길이 전체를 쉰다
@@ -852,10 +870,9 @@ def _build_measure(geo, system, bounds, index, tokens, warn,
         fitted = [known_pins.get(i, durations.LEGAL[0]) for i in range(len(beat_xs))]
         exact = True
     else:
-        fitted, exact = durations.fit_durations(
-            durations.proportions(beat_xs, x1, target), target, pinned=known_pins,
-            allow_tuplets=allow_tuplets, tuplet_indices=tuplet_indices,
-            open_tuplet_indices=open_tuplets)
+        fitted, exact, _ = durations.fit_with_triplets(
+            durations.proportions(beat_xs, x1, target), target, known_pins,
+            tuplet_indices, windows)
     if not exact:
         total = sum(d.quarters for d in fitted)
         warn.add(index, "duration_mismatch",
@@ -914,27 +931,26 @@ def _build_measure(geo, system, bounds, index, tokens, warn,
                  for kind in beat_articulations.get(position, ())],
             "notes": notes,
         })
-    # 코드 행은 첫 성부 몫이다 — 두 성부에 다 붙이면 같은 코드가 두 번 적힌다
+    # 성부 모드의 코드 행은 _polyphonic_measure 가 두 성부를 합친 뒤 배정한다
     measure["pending_row_chord"] = (
         _assign_row_chords(measure["beats"], tokens, bounds, index, warn, tuning,
                            pending=pending_row_chord)
-        if _voice != 1 else None)
+        if _voice is None else None)
     measure["pending_graces"] = _attach_graces(
         measure["beats"], grace_glyphs, system, index, warn,
         pending=pending_graces, techniques=techniques)
     # 경계 마디(픽업·불완전 종지) 재판정에 쓰는 임시 값 — extract_ir 가 걷어낸다
     measure["_fit"] = {
         "beat_xs": beat_xs, "x1": x1, "pins": known_pins,
-        "allow_tuplets": allow_tuplets,
         "tuplet_indices": tuplet_indices,
-        "open_tuplets": open_tuplets,
+        "triplet_windows": windows,
         "full_measure_rest": full_measure_rest,
     }
     if _voice is not None:
         measure["_fit"]["events"] = durations.VoiceEvents(
             xs=tuple(beat_xs), pins=dict(known_pins),
             rests=frozenset(rest_positions), tuplets=frozenset(tuplet_indices),
-            open_tuplets=frozenset(open_tuplets), whole_rest=full_measure_rest)
+            triplet_windows=tuple(windows), whole_rest=full_measure_rest)
     return measure
 
 
@@ -973,16 +989,26 @@ def _refit_measure(measure: dict, numerator: int, denominator: int,
     if "events" in fit:
         _assemble_voices(measure, target, warn)     # 두 성부는 공통 시간축째로 다시 푼다
         return
-    fitted, exact = durations.fit_durations(
+    fitted, exact, _ = durations.fit_with_triplets(
         durations.proportions(fit["beat_xs"], fit["x1"], target), target,
-        pinned=fit["pins"], allow_tuplets=fit["allow_tuplets"],
-        tuplet_indices=fit["tuplet_indices"], open_tuplet_indices=fit["open_tuplets"])
+        fit["pins"], fit["tuplet_indices"], fit["triplet_windows"])
     for beat, duration in zip(measure["beats"], fitted):
         beat.update(_duration_fields(duration))
     if not exact:
         total = sum(d.quarters for d in fitted)
         warn.add(measure["index"], "duration_mismatch",
                  f"합 {total:.3f} / 목표 {target:.3f} (픽업 재맞춤)")
+
+
+def _pins_fill(fit: dict, target: float) -> bool:
+    """확정 음가만으로 마디가 찬다 — 단성부든, 두 성부 중 한 성부든."""
+    def complete(xs, pins) -> bool:
+        return (bool(xs) and len(pins) == len(xs) and abs(
+            sum(d.quarters for d in pins.values()) - target) < durations.EPSILON)
+    if "events" in fit:
+        return any(voice.whole_rest or complete(voice.xs, voice.pins)
+                   for voice in fit["events"])
+    return complete(fit["beat_xs"], fit["pins"])
 
 
 def _adjust_boundary_measures(measures: list[dict], warn: _Warnings) -> None:
@@ -1011,9 +1037,7 @@ def _adjust_boundary_measures(measures: list[dict], warn: _Warnings) -> None:
         if fit["full_measure_rest"]:
             continue                 # 온쉼표는 가운데 놓여도 마디 전체다
         target = durations.target_quarters(*measure["time_sig"])
-        if (len(fit["pins"]) == len(fit["beat_xs"])
-                and abs(sum(d.quarters for d in fit["pins"].values())
-                        - target) < durations.EPSILON):
+        if _pins_fill(fit, target):
             continue                 # 확정 음가가 채운 마디를 폭으로 줄이지 않는다
         estimated = _measure_span(measure) / scale
         if estimated >= PICKUP_MAX_RATIO * target:

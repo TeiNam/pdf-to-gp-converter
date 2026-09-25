@@ -127,3 +127,22 @@ def test_same_score_at_another_page_scale_reads_the_same(factor, tmp_path):
     assert _music(scaled) == _music(base)
     assert ([w["kind"] for w in scaled["warnings"]]
             == [w["kind"] for w in base["warnings"]])
+
+
+def test_narrow_tab_staff_is_not_mistaken_for_a_shrunken_page(tmp_path):
+    """오선 5pt·타브 6pt 간격에 9.3pt 프렛 — 조판이 다를 뿐 배율은 1 이다."""
+    import pymupdf
+    path = tmp_path / "narrow.pdf"
+    doc = pymupdf.open()
+    page = doc.new_page(width=612, height=792)
+    melody = [100. + 5 * i for i in range(5)]
+    tab = [150. + 6 * i for i in range(6)]
+    for y in melody + tab:
+        page.draw_line((40, y), (400, y), width=0.4)
+    page.draw_line((400, melody[0]), (400, tab[-1]), width=0.6)
+    for x in (70., 150., 230., 310.):
+        page.insert_text((x, tab[2] + 3.3), "5", fontsize=9.3)
+    doc.save(path)
+    doc.close()
+    ir = extract.extract_ir(str(path), tempo=80)
+    assert [[n["fret"] for n in b["notes"]] for b in ir["measures"][0]["beats"]] == [[5]] * 4

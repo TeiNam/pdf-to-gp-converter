@@ -184,8 +184,11 @@ def apply_tie_curves(geo, system, system_measures: list[dict], warn) -> None:
     호를 짝짓는다.
     """
     beats = [beat for measure in system_measures for beat in measure["beats"]]
+    # 성부 표시가 없는 beat 은 단성부 마디다 — 어느 성부의 타이든 이어받는다
+    # (두 성부 마디의 아랫성부가 다음 단성부 마디로 이어지는 타이)
     for voice in sorted({beat.get("voice", 0) for beat in beats}):
-        _apply_voice_ties(geo, system, [b for b in beats if b.get("voice", 0) == voice])
+        _apply_voice_ties(geo, system, [b for b in beats
+                                        if b.get("voice", voice) == voice])
 
 
 def _apply_voice_ties(geo, system, beats):

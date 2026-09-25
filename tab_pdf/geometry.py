@@ -1,5 +1,6 @@
 """PDF 저수준 기하 수집. 음악적 해석은 하지 않는다."""
 
+from collections import Counter
 from dataclasses import dataclass, field
 from itertools import pairwise
 
@@ -27,6 +28,11 @@ SAME_LINE_TOLERANCE = 1.0
 # 다른 배율로 내보낸 PDF 는 좌표를 이 간격에 맞춰 되돌린 뒤 해석한다
 # (실측: 125% 확대본은 정규화 없이 음 1564개 중 291개를 잃었다)
 REFERENCE_STAFF_GAP = 7.7
+# 아래 문턱들이 전제한 프렛 숫자 크기 (pt) — 실측 대상 악보의 숫자 크기 최빈값
+REFERENCE_DIGIT_SIZE = 9.3
+# 선 간격과 숫자 크기로 잰 두 배율이 이만큼 안에서 맞아야 페이지 배율로 믿는다.
+# 확대·축소 내보내기는 둘을 함께 바꾸고, 조판 차이(좁은 타브 간격)는 한쪽만 바꾼다
+SCALE_AGREEMENT = 0.1
 # 이 안의 배율 차이는 문턱들의 여유로 흡수된다 — 좌표를 건드리지 않는다
 # (합성 악보의 8pt 타브 간격은 기준보다 4% 넓지만 그대로 읽힌다)
 SCALE_TOLERANCE = 0.05
@@ -162,15 +168,26 @@ def _drawing_beams(drawing, scale: float = 1.0):
                 yield Beam(a.x, a.y, b.x, b.y)
 
 
-def page_scale(hlines: list[HLine]) -> float:
-    """staff 선 간격으로 잰 페이지 배율. 선이 없거나 기준과 거의 같으면 1."""
+def page_scale(hlines: list[HLine], glyphs: list[Glyph]) -> float:
+    """staff 선 간격과 숫자 크기가 함께 말하는 페이지 배율. 모르면 1.
+
+    선 간격만 믿으면 타브 간격이 좁게 조판된 악보를 축소본으로 오인해 9.3pt
+    프렛을 11.9pt 로 키우고, 프렛 크기 상한에 걸려 음이 전부 사라진다.
+    """
     ys = sorted({round(h.y, 1) for h in hlines if h.width > MIN_STAFF_LINE_WIDTH})
     gaps = sorted(b - a for a, b in pairwise(ys))
     if not gaps:
         return 1.0
     # 시스템 하나에 선 사이 간격 9개, 시스템 사이 간격 1~2개 — 중앙값은 선 간격이다
     scale = gaps[len(gaps) // 2] / REFERENCE_STAFF_GAP
-    return 1.0 if abs(scale - 1.0) < SCALE_TOLERANCE else scale
+    if abs(scale - 1.0) < SCALE_TOLERANCE:
+        return 1.0
+    sizes = Counter(g.size for g in glyphs if g.char.isdigit())
+    if sizes:
+        digit_scale = sizes.most_common(1)[0][0] / REFERENCE_DIGIT_SIZE
+        if abs(digit_scale / scale - 1.0) > SCALE_AGREEMENT:
+            return 1.0
+    return scale
 
 
 def _normalized(geo: PageGeometry, scale: float) -> PageGeometry:
@@ -196,7 +213,8 @@ def load_page_geometry(page) -> PageGeometry:
             geo.hlines.append(HLine(y0, min(x0, x1), max(x0, x1)))
         elif abs(x1 - x0) < VERTICAL_TOLERANCE:
             geo.vlines.append(VLine(x0, min(y0, y1), max(y0, y1)))
-    scale = page_scale(geo.hlines)
+    geo.glyphs.extend(_page_glyphs(page))
+    scale = page_scale(geo.hlines, geo.glyphs)
 
     # 곡선(타이·슬러 호). 한 호가 베지어 여러 조각이라 드로잉 단위로 모아
     # 좌우 끝점만 남긴다 — 음악적 해석(타이인지)은 extract 의 몫이다.
@@ -212,17 +230,16 @@ def load_page_geometry(page) -> PageGeometry:
             above = sum(controls) / len(controls) < (left.y + right.y) / 2
             geo.curves.append(Curve(left.x, left.y, right.x, right.y, above))
 
-    for block in page.get_text("rawdict")["blocks"]:
-        for line in block.get("lines", []):
-            for span in line["spans"]:
-                for ch in span["chars"]:
-                    if ch["c"].strip() == "":
-                        continue
-                    geo.glyphs.append(Glyph(
-                        x=ch["origin"][0], y=ch["origin"][1], x_end=ch["bbox"][2],
-                        char=ch["c"], font=span["font"], size=round(span["size"], 1),
-                    ))
     return _normalized(geo, scale)
+
+
+def _page_glyphs(page) -> list[Glyph]:
+    return [Glyph(x=ch["origin"][0], y=ch["origin"][1], x_end=ch["bbox"][2],
+                  char=ch["c"], font=span["font"], size=round(span["size"], 1))
+            for block in page.get_text("rawdict")["blocks"]
+            for line in block.get("lines", [])
+            for span in line["spans"]
+            for ch in span["chars"] if ch["c"].strip() != ""]
 
 
 def staff_groups(geo: PageGeometry) -> list[list[float]]:

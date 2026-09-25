@@ -143,13 +143,33 @@ def voice_assignments(geo, system, notes, rests, tolerance=2.0):
     return assignments
 
 
+def _on_beam(geo, system, beam, note) -> bool:
+    return any(beam.x0 - 0.5 <= stem.x <= beam.x1 + 0.5
+               and stem.y0 - 2 <= beam.y_at(stem.x) <= stem.y1 + 2
+               for stem in stems_for(geo, system, note))
+
+
 def beam_members(geo, system, beam, beat_xs, notes, tolerance=2.0):
     """이 빔에 연결된 기둥의 beat 인덱스."""
     return {index for index, x in enumerate(beat_xs)
             for note in notes if abs(note.x - x) <= tolerance
-            for stem in stems_for(geo, system, note)
-            if beam.x0 - 0.5 <= stem.x <= beam.x1 + 0.5
-            and stem.y0 - 2 <= beam.y_at(stem.x) <= stem.y1 + 2}
+            and _on_beam(geo, system, beam, note)}
+
+
+def _beams_near(geo, mark):
+    """'3' 표기가 가리키는 빔 후보 — (표기와의 세로 거리, 빔)."""
+    return [(abs(beam.y_at(mark.x) - mark.y), beam) for beam in geo.beams
+            if beam.x0 - 3 <= mark.x <= beam.x1 + 3
+            and abs(beam.y_at(mark.x) - mark.y) <= 12]
+
+
+def mark_beam_notes(geo, system, mark, notes):
+    """'3' 표기에 가장 가까운 빔이 묶은 음. 빔이 없거나 음이 없으면 빈 목록."""
+    for _, beam in sorted(_beams_near(geo, mark), key=lambda pair: pair[0]):
+        held = [n for n in notes if _on_beam(geo, system, beam, n)]
+        if held:
+            return held
+    return []
 
 
 def is_triplet_mark(mark, system, notes=(), fret_glyphs=()) -> bool:
@@ -169,37 +189,36 @@ def is_triplet_mark(mark, system, notes=(), fret_glyphs=()) -> bool:
 def triplet_groups(geo, system, beat_xs, notes, bounds, fret_glyphs=()):
     """'3'의 위치와 빔으로 셋잇단 범위를 정한다.
 
-    Returns: (확정 묶음 목록, 셋잇단 후보만 여는 인덱스). 빔이 정확히 세 음을
-    묶을 때만 확정한다. 빔이 없거나 음 수가 다르면(4분+8분 셋잇단, 쉼표가 낀
-    묶음) 표기 주변 이벤트에 후보만 열어 마디 합 풀이가 고르게 한다 — 이웃 세
-    이벤트를 강제로 묶으면 뒤따르는 정상 음표가 셋잇단에 끌려 들어간다.
+    Returns: (확정 묶음 목록, 표기 창 목록). 빔 양 끝 음 사이의 이벤트가 정확히
+    셋이면 확정한다 — 가운데 쉼표는 빔에 닿지 않아도 묶음 안이다. 빔이 없거나
+    이벤트 수가 다르면(4분+8분 셋잇단 등) 창만 넘긴다. 창 안에서 셋잇단 구간
+    하나를 반드시 고르는 것은 durations.fit_with_triplets 의 몫이다.
     """
-    forced, opened = [], set()
+    forced: list[list[int]] = []
+    windows: list[tuple[int, ...]] = []
     if len(beat_xs) < 2:
-        return forced, opened
+        return forced, windows
     for mark in geo.glyphs:
         if not bounds[0] <= mark.x < bounds[1]:
             continue
         explicit = mark.char == chr(0xE883)
         if not is_triplet_mark(mark, system, notes, fret_glyphs):
             continue
-        near = []
-        for beam in geo.beams:
-            if not (beam.x0 - 3 <= mark.x <= beam.x1 + 3
-                    and abs(beam.y_at(mark.x) - mark.y) <= 12):
-                continue
+        spans = []
+        for distance, beam in _beams_near(geo, mark):
             members = beam_members(geo, system, beam, beat_xs, notes)
             if members:
-                near.append((abs(beam.y_at(mark.x) - mark.y), sorted(members)))
-        exact = [(d, m) for d, m in near if len(m) == 3 and m[-1] - m[0] == 2]
+                spans.append((distance, list(range(min(members), max(members) + 1))))
+        exact = [(d, span) for d, span in spans if len(span) == 3]
         if exact:
             forced.append(min(exact)[1])
-        elif explicit and near:
-            opened |= set(min(near)[1])
+        elif explicit and spans:
+            windows.append(tuple(min(spans)[1]))
         elif explicit:
             nearest = sorted(range(len(beat_xs)), key=lambda i: abs(beat_xs[i] - mark.x))
-            opened |= set(nearest[:3])
-    return forced, opened - {i for group in forced for i in group}
+            windows.append(tuple(sorted(nearest[:3])))
+    taken = {i for group in forced for i in group}
+    return forced, [w for w in windows if len(w) >= 2 and not taken & set(w)]
 
 
 def shared_triplet_group(geo, system, beat_xs, notes, bounds, pins, target):

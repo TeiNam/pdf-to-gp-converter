@@ -6,6 +6,7 @@ PDF 를 모르는 순수 계산 모듈이다. 추출기가 확정한 음가는 �
 
 from dataclasses import dataclass, field
 from functools import lru_cache
+from itertools import product
 
 EPSILON = 1e-9
 # 모든 legal 길이는 1/96 박의 배수다 — 점64분(0.09375)과 셋잇단까지의 공배수.
@@ -104,7 +105,8 @@ def fit_durations(props: list[float], target: float,
                   pinned: dict[int, LegalDuration] | None = None,
                   allow_tuplets: bool = False,
                   tuplet_indices: set[int] | None = None,
-                  open_tuplet_indices: set[int] | frozenset[int] = frozenset(),
+                  onsets: dict[int, float] | None = None,
+                  floors: dict[int, float] | None = None,
                   ) -> tuple[list[LegalDuration], bool]:
     """비례값을 legal 값으로 스냅하되 합이 정확히 target 이 되게 맞춘다.
 
@@ -121,8 +123,8 @@ def fit_durations(props: list[float], target: float,
     셋잇단이 유입된다 (실측: 이 악보 m5·m7 이 바뀌었다).
 
     `tuplet_indices`를 주면 그 묶음만 셋잇단으로, 나머지는 일반 음가로 푼다.
-    `open_tuplet_indices` 는 셋잇단일 수도 아닐 수도 있는 자리다 — '3' 표기는
-    있는데 묶음 범위를 확정할 빔이 없을 때 강제하지 않고 후보만 연다.
+    `onsets` 는 시작 시각을 아는 자리다 (인덱스 → 마디 첫머리부터의 박).
+    `floors` 는 길이의 하한만 아는 자리다 — 뒤에 쉼표가 생략됐을 수 있는 음.
 
     Returns: (스냅 결과, 합이 정확히 맞았는지)
     """
@@ -131,27 +133,30 @@ def fit_durations(props: list[float], target: float,
     pins = pinned or {}
     legal_pool = LEGAL if allow_tuplets else PLAIN_LEGAL
 
+    lows = floors or {}
+
     def candidates_at(index):
         if index in pins:
-            pin = pins[index]
-            if index in open_tuplet_indices and pin.tuplet is None:
-                return (pin, as_triplet(pin))
-            return (pin,)
-        if index in open_tuplet_indices:
-            return LEGAL
+            return (pins[index],)
+        pool = legal_pool
         if tuplet_indices is not None:
-            return tuple(d for d in LEGAL
+            pool = tuple(d for d in LEGAL
                          if bool(d.tuplet) == (index in tuplet_indices))
-        return legal_pool
+        if index in lows:
+            pool = tuple(d for d in pool if d.quarters >= lows[index] - EPSILON)
+        return pool
 
     target_units = _units(target)
     if target_units is None or target_units <= 0:
         return [_nearest(prop) for prop in props], False
+    anchors = {index: _units(onset) for index, onset in (onsets or {}).items()}
 
     @lru_cache(maxsize=DP_CACHE_SIZE)
     def solve(index: int,
               remaining: int) -> tuple[float, tuple[LegalDuration, ...]] | None:
         """props[index:] 로 remaining 단위를 정확히 채우는 최소비용 선택."""
+        if index in anchors and target_units - remaining != anchors[index]:
+            return None
         if index == len(props):
             return (0.0, ()) if remaining == 0 else None
         best: tuple[float, tuple[LegalDuration, ...]] | None = None
@@ -179,6 +184,50 @@ def fit_durations(props: list[float], target: float,
         return [min(candidates_at(i), key=lambda d: abs(d.quarters - prop))
                 for i, prop in enumerate(props)], False
     return list(solution[1]), True
+
+
+# 표기 창 조합 상한 — 창 하나는 많아야 수십 가지라 실제 악보에서는 닿지 않는다
+MAX_TRIPLET_CHOICES = 512
+
+
+def _window_runs(window: tuple[int, ...]) -> list[frozenset[int]]:
+    """창 안에서 셋잇단일 수 있는 연속 구간 — 두 이벤트 이상 (4분+8분 셋잇단)."""
+    return [frozenset(window[a:b]) for a in range(len(window))
+            for b in range(a + 2, len(window) + 1)]
+
+
+def fit_with_triplets(props: list[float], target: float,
+                      pinned: dict[int, LegalDuration],
+                      forced: set[int],
+                      windows: list[tuple[int, ...]],
+                      onsets: dict[int, float] | None = None,
+                      floors: dict[int, float] | None = None,
+                      floor_tuplets: set[int] | None = None,
+                      ) -> tuple[list[LegalDuration], bool, set[int]]:
+    """확정 셋잇단 묶음에 더해, '3' 표기 창마다 셋잇단 구간 하나를 반드시 고른다.
+
+    창의 이벤트를 전부 강제하면 4분+8분 셋잇단 뒤의 정상 음이 끌려 들어가고,
+    후보만 열면 간격이 고른 마디에서 표기를 버린다. 창마다 연속 구간 하나를
+    골라 보고 합이 맞는 것 중 x 간격에 가장 가까운 해를 쓴다.
+
+    Returns: (스냅 결과, 합이 정확히 맞았는지, 셋잇단으로 푼 인덱스)
+    """
+    options = [runs for runs in map(_window_runs, windows) if runs]
+    best = None
+    for count, choice in enumerate(product(*options)):
+        if count >= MAX_TRIPLET_CHOICES:
+            break       # ponytail: 창이 많은 마디는 앞 조합만 본다 — 넘치면 경고로 드러난다
+        tuplets = set(forced).union(*choice)
+        pins = {i: as_triplet(p) if i in tuplets and p.tuplet is None else p
+                for i, p in pinned.items()}
+        lows = {i: q * 2 / 3 if i in tuplets and i not in (floor_tuplets or ()) else q
+                for i, q in (floors or {}).items()}
+        fitted, exact = fit_durations(props, target, pinned=pins,
+                                      tuplet_indices=tuplets, onsets=onsets, floors=lows)
+        cost = sum(abs(d.quarters - p) for d, p in zip(fitted, props))
+        if best is None or (not exact, cost) < best[0]:
+            best = ((not exact, cost), fitted, exact, tuplets)
+    return best[1], best[2], best[3]
 
 
 def rest_durations(quarters: float) -> list[LegalDuration]:
@@ -214,7 +263,7 @@ class VoiceEvents:
     pins: dict[int, LegalDuration] = field(default_factory=dict)
     rests: frozenset[int] = frozenset()
     tuplets: frozenset[int] = frozenset()
-    open_tuplets: frozenset[int] = frozenset()
+    triplet_windows: tuple[tuple[int, ...], ...] = ()
     # 이 성부가 온쉼표 하나뿐 — 놓인 x 와 무관하게 마디 전체를 쉰다
     whole_rest: bool = False
 
@@ -243,27 +292,63 @@ def _union_timeline(voices, tolerance):
 
 
 def _segment_constraints(voices, positions, count):
-    """한 구간만 덮는 이벤트의 확정 길이를 공통 구간에 옮긴다.
+    """이벤트 제약을 공통 구간 제약으로 옮긴다.
 
-    셋잇단 표시는 이벤트가 시작하는 구간에만 준다 — 성부의 마지막 음처럼
-    생략된 쉼표까지 덮는 이벤트가 마디 끝 구간을 전부 셋잇단으로 만들면 안 된다.
+    쉼표 글리프의 길이는 정확한 제약이다 — 바로 다음 구간이면 구간 길이로,
+    여러 구간을 덮으면(2분쉼표 아래의 4분 둘) 시작 시각 사슬로 옮긴다.
+    음의 확정 길이는 하한일 뿐이다 — 두 성부 타브는 음 뒤의 쉼표를 흔히
+    생략한다. 셋잇단은 이벤트가 시작하는 구간에 준다 — 마지막 음이 덮는 마디
+    끝 구간을 전부 셋잇단으로 만들면 안 된다.
+
+    Returns: (구간 확정 길이, 구간 하한, 하한이 이미 셋잇단인 구간,
+              확정 셋잇단 구간, 표기 창, 시작 시각, 충돌 설명)
     """
     pins: dict[int, LegalDuration] = {}
+    floors: dict[int, float] = {}
+    floor_tuplets: set[int] = set()
     forced: set[int] = set()
-    opened: set[int] = set()
+    windows: list[tuple[int, ...]] = []
+    intervals: list[tuple[int, int, float]] = []
     for voice, where in zip(voices, positions):
         for i, k in enumerate(where):
-            following = where[i + 1] if i + 1 < len(where) else count
-            if following == k + 1 and i in voice.pins:
-                pins.setdefault(k, voice.pins[i])
             if i in voice.tuplets:
                 forced.add(k)
-            if i in voice.open_tuplets:
-                opened.add(k)
-    return pins, forced, opened - forced
+            if i + 1 >= len(where) or i not in voice.pins:
+                continue
+            pin = voice.pins[i]
+            if i in voice.tuplets and pin.tuplet is None:
+                pin = as_triplet(pin)
+            if i not in voice.rests:
+                if where[i + 1] == k + 1 and pin.quarters > floors.get(k, 0.0):
+                    floors[k] = pin.quarters
+                    if pin.tuplet:
+                        floor_tuplets.add(k)
+                continue
+            intervals.append((k, where[i + 1], pin.quarters))
+            if where[i + 1] == k + 1:
+                pins.setdefault(k, pin)
+        for window in voice.triplet_windows:
+            mapped = [where[i] for i in window]
+            windows.append(tuple(range(min(mapped), max(mapped) + 1)))
+    onsets: dict[int, float] = {0: 0.0} if count else {}
+    changed = True
+    while changed:
+        changed = False
+        for start, stop, length in intervals:
+            for known, other, sign in ((start, stop, 1), (stop, start, -1)):
+                if known not in onsets:
+                    continue
+                value = onsets[known] + sign * length
+                if other not in onsets:
+                    onsets[other] = value
+                    changed = True
+                elif abs(onsets[other] - value) > EPSILON:
+                    return (pins, floors, floor_tuplets, forced, windows, {},
+                            [f"쉼표 길이끼리 시각이 어긋난다 (구간 {start}..{stop})"])
+    return pins, floors, floor_tuplets, forced, windows, onsets, []
 
 
-def _voice_slots(voice, where, onsets, segments, total, problems):
+def _voice_slots(voice, where, onsets, segments, tuplet_segments, total, problems):
     """공통 시각에 맞춰 이 성부의 이벤트 길이를 정하고 빈 곳은 쉼표로 채운다."""
     slots: list[tuple[int | None, LegalDuration]] = []
 
@@ -287,7 +372,10 @@ def _voice_slots(voice, where, onsets, segments, total, problems):
             continue
         # 길이를 모르는 음은 다음 음까지 이어진다고 본다. 그 길이가 음가가 아니면
         # 셋잇단 음은 첫 구간 길이를, 아니면 들어가는 최대 음가를 쓰고 나머지를 쉰다
-        chosen = (voice.pins.get(i) or _exact_legal(span, first.tuplet is not None)
+        pin = voice.pins.get(i)
+        if pin is not None and pin.tuplet is None and k in tuplet_segments:
+            pin = as_triplet(pin)       # 시간축이 셋잇단으로 푼 자리의 꼬리 음가
+        chosen = (pin or _exact_legal(span, first.tuplet is not None)
                   or (first if first.tuplet else _largest_within(span, False)))
         if chosen is None:
             problems.append(f"이벤트 {i}: {span:.3f}박을 음가로 나타낼 수 없다")
@@ -311,19 +399,21 @@ def align_voices(voices: list[VoiceEvents], measure_end_x: float, target: float,
     (타브는 다른 성부가 연주하는 동안의 쉼표를 흔히 생략한다).
     """
     union, positions = _union_timeline(voices, tolerance)
-    union_pins, forced, opened = _segment_constraints(voices, positions, len(union))
-    segments, exact = fit_durations(
-        proportions(union, measure_end_x, target), target, pinned=union_pins,
-        tuplet_indices=forced, open_tuplet_indices=opened)
+    (union_pins, floors, floor_tuplets, forced, windows, anchors,
+     conflicts) = _segment_constraints(voices, positions, len(union))
+    segments, exact, tuplet_segments = fit_with_triplets(
+        proportions(union, measure_end_x, target), target, union_pins, forced, windows,
+        onsets=anchors, floors=floors, floor_tuplets=floor_tuplets)
     onsets = [0.0]
     for segment in segments:
         onsets.append(onsets[-1] + segment.quarters)
     total = onsets[-1] if union else target
-    problems: list[str] = []
+    problems: list[str] = list(conflicts)
     slots = tuple(
         tuple((0, d) if i == 0 else (None, d)
               for i, d in enumerate(rest_durations(target))) if v.whole_rest
-        else tuple(_voice_slots(v, where, onsets, segments, total, problems))
+        else tuple(_voice_slots(v, where, onsets, segments, tuplet_segments, total,
+                                problems))
         for v, where in zip(voices, positions))
     return Alignment(slots, tuple(union), union_pins, exact and not problems,
                      tuple(problems))

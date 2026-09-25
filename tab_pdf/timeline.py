@@ -355,4 +355,3 @@ def align_voices(voices: list[VoiceEvents], measure_end_x: float, target: float,
         else tuple(_voice_slots(v, where, onsets, triplets, total, problems))
         for v, where in zip(voices, positions))
     return Alignment(slots, tuple(union), exact and not problems, tuple(problems))
-

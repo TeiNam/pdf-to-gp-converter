@@ -129,6 +129,39 @@ def test_same_score_at_another_page_scale_reads_the_same(factor, tmp_path):
             == [w["kind"] for w in base["warnings"]])
 
 
+@pytest.mark.parametrize("frets", ["00000000", "12120202"])
+@pytest.mark.parametrize("polyphonic", [False, True])
+def test_scaled_close_notes_with_separate_stems_keep_every_note(frets, polyphonic, tmp_path):
+    """정규화로 간격이 6pt 아래가 되어도 독립 기둥의 음을 00·12프렛으로 합치지 않는다."""
+    import guitarpro as gp
+    import pymupdf
+
+    pdf, output = tmp_path / "compact.pdf", tmp_path / "compact.gp5"
+    with pymupdf.open() as doc:
+        page = doc.new_page(width=440, height=280)
+        melody = (100., 105.5, 111., 116.5, 122.)
+        tab = tuple(160. + 8.5 * i for i in range(6))
+        for y in melody + tab:
+            page.draw_line((40, y), (400, y), width=0.4)
+        page.draw_line((400, melody[0]), (400, tab[-1]), width=0.6)
+        xs = (70., 76.5, 83., 89.5, 150., 210., 270., 330.)
+        for x, fret in zip(xs, frets):
+            page.insert_text((x, tab[2]), fret, fontsize=10.2)
+            page.draw_line((x + 2.5, 180), (x + 2.5, 225), width=0.5)
+        page.draw_line((xs[0] + 2.5, 225), (xs[-1] + 2.5, 225), width=2.6)
+        if polyphonic:
+            page.insert_text((xs[0], tab[0]), "5", fontsize=10.2)
+            page.draw_line((xs[0] + 2.5, 135), (xs[0] + 2.5, 157), width=0.5)
+        doc.save(pdf)
+
+    assert convert.main([str(pdf), "-o", str(output), "--tempo", "80"]) == 0
+    measure = gp.parse(str(output), encoding=build.GP5_ENCODING).tracks[0].measures[0]
+    beats = measure.voices[int(polyphonic)].beats
+    assert [[note.value for note in beat.notes] for beat in beats] == [[int(f)] for f in frets]
+    assert [beat.startInMeasure for beat in beats] == [480 * i for i in range(8)]
+    assert [beat.duration.time for beat in beats] == [480] * 8
+
+
 def test_narrow_tab_staff_is_not_mistaken_for_a_shrunken_page(tmp_path):
     """오선 5pt·타브 6pt 간격에 9.3pt 프렛 — 조판이 다를 뿐 배율은 1 이다."""
     import pymupdf

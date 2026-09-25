@@ -195,13 +195,14 @@ def _grace_glyphs(geo, system, x0, x1, letter_index,
             and not _has_adjacent_letter(letter_index, g)]
 
 
-def _merge_two_digit_frets(glyphs, system, index, warn,
+def _merge_two_digit_frets(geo, glyphs, system, index, warn,
                            *, sources: dict | None = None) -> list[geometry.Glyph]:
     """같은 줄에서 커닝으로 붙은 숫자쌍을 두 자리 프렛 한 음으로 병합한다.
 
     '12' 는 숫자 글리프 2개(origin 간격 ~5pt)로 오는데, beat 클러스터 허용
     (2pt)보다 넓어서 병합하지 않으면 1프렛·2프렛 **별개 beat 둘**이 된다.
-    실측: 이 PDF 의 별개 음은 6.8pt 이상 떨어져 있어 6pt 문턱에 오탐이 없다.
+    배율·조판에 따라 별개 음도 6pt보다 가까울 수 있다. 각각 독립된 기둥이
+    있으면 거리와 무관하게 두 음으로 보존한다.
     병합값이 프렛 상한을 넘는 쌍(붙은 '2''5' 따위)은 별개 음으로 두되 경고한다.
     """
     if sources is not None:
@@ -224,6 +225,11 @@ def _merge_two_digit_frets(glyphs, system, index, warn,
             apart = (right is None
                      or (right.x - left.x_end >= KERNED_DIGIT_INK_GAP
                          and right.x - left.x >= KERNED_DIGIT_ORIGIN_GAP))
+            if not apart:
+                left_stems = set(rhythm.stems_for(geo, system, left))
+                right_stems = set(rhythm.stems_for(geo, system, right))
+                apart = bool(left_stems and right_stems
+                             and left_stems.isdisjoint(right_stems))
             if apart:
                 merged.append(left)
                 position += 1
@@ -674,7 +680,8 @@ def _polyphonic_measure(geo, system, bounds, index, tokens, warn, time_sig,
     raw_frets = _fret_glyphs(geo, system, x0, x1, letter_index, cutoff)
     sources: dict = {}
     # 성부 판정도 병합한 프렛 중심을 쓴다. 병합 경고는 성부별 해석이 남긴다
-    frets = _merge_two_digit_frets(raw_frets, system, index, _Warnings(), sources=sources)
+    frets = _merge_two_digit_frets(
+        geo, raw_frets, system, index, _Warnings(), sources=sources)
     graces = _grace_glyphs(geo, system, x0, x1, letter_index, cutoff)
     notes = frets + _dead_glyphs(geo, system, x0, x1) + [
         g for g in geo.glyphs if x0 <= g.x < x1
@@ -792,10 +799,10 @@ def _build_measure(geo, system, bounds, index, tokens, warn,
             return polyphonic
     raw_fret_glyphs = _fret_glyphs(geo, system, x0, x1, letter_index,
                                    grace_cutoff)
-    fret_glyphs = _merge_two_digit_frets(raw_fret_glyphs, system, index, warn)
+    fret_glyphs = _merge_two_digit_frets(geo, raw_fret_glyphs, system, index, warn)
     raw_grace_glyphs = _grace_glyphs(geo, system, x0, x1, letter_index,
                                      grace_cutoff)
-    grace_glyphs = _merge_two_digit_frets(raw_grace_glyphs, system, index, warn)
+    grace_glyphs = _merge_two_digit_frets(geo, raw_grace_glyphs, system, index, warn)
     dead_glyphs = _dead_glyphs(geo, system, x0, x1)
     rest_glyphs = _rest_glyphs(geo, system, x0, x1)
     slash_xs = _slash_xs(geo, system, x0, x1)

@@ -6,11 +6,14 @@ PDF 를 모르는 순수 계산 모듈이다. 추출기가 확정한 음가는 �
 
 from dataclasses import dataclass
 from functools import lru_cache
+from itertools import product
+from math import prod
 
 EPSILON = 1e-9
-# 모든 legal 길이는 1/48 (64분음표의 절반 = 셋잇단까지의 공배수) 의 배수다.
-# 정수 단위로 환산해 DP 로 정확히 푼다 — 64분음표 = 3단위, 셋잇단 8분 = 16단위.
-UNIT_QUARTERS = 1.0 / 48.0
+# 모든 legal 길이는 1/96 박의 배수다 — 점64분(0.09375)과 셋잇단까지의 공배수.
+# 정수 단위로 환산해 DP 로 정확히 푼다 — 64분음표 = 6단위, 점64분 = 9단위,
+# 셋잇단 8분 = 32단위. 1/48 이면 점64분이 4.5단위라 반올림돼 넘친 마디가 통과했다.
+UNIT_QUARTERS = 1.0 / 96.0
 # DP 캐시 크기 — (beat index, 남은 단위) 조합 상한. beat 수십 × 단위 수백이면 충분
 DP_CACHE_SIZE = 100_000
 
@@ -71,8 +74,10 @@ def _nearest(prop: float) -> LegalDuration:
     return min(LEGAL, key=lambda legal: abs(legal.quarters - prop))
 
 
-def _units(quarters: float) -> int:
-    return round(quarters / UNIT_QUARTERS)
+def _units(quarters: float) -> int | None:
+    """단위 수. 단위의 배수가 아니면 None — 반올림한 값으로 합을 속이지 않는다."""
+    units = round(quarters / UNIT_QUARTERS)
+    return units if abs(units * UNIT_QUARTERS - quarters) < EPSILON else None
 
 
 # 잇단음표 표기가 없는 마디용 후보 — 셋잇단 제외
@@ -92,14 +97,20 @@ REST_DURATIONS: dict[str, LegalDuration] = {
 REST_NAMES = frozenset(REST_DURATIONS) | {"restWhole"}
 
 
+def as_triplet(legal: LegalDuration) -> LegalDuration:
+    """같은 음표 모양의 셋잇단 길이 (3개를 2개 자리에)."""
+    return LegalDuration(legal.value, legal.dotted, legal.quarters * 2 / 3, TRIPLET)
+
+
 def fit_durations(props: list[float], target: float,
                   pinned: dict[int, LegalDuration] | None = None,
                   allow_tuplets: bool = False,
                   tuplet_indices: set[int] | None = None,
+                  floors: dict[int, float] | None = None,
                   ) -> tuple[list[LegalDuration], bool]:
     """비례값을 legal 값으로 스냅하되 합이 정확히 target 이 되게 맞춘다.
 
-    독립 스냅은 반올림 때문에 합이 어긋난다. legal 길이가 모두 1/48박의 배수이므로
+    독립 스냅은 반올림 때문에 합이 어긋난다. legal 길이가 모두 1/96박의 배수이므로
     정수 단위 DP 로 "합이 정확히 target 이면서 스냅 오차 총합이 최소" 인 조합을
     찾는다. 그리디와 달리 해가 존재하면 반드시 찾는다 — 예: `[4.0, 4.0]` 을
     target 4.0 에 맞출 때 그리디는 실패했지만 DP 는 `[2.0, 2.0]` 을 찾는다.
@@ -112,6 +123,7 @@ def fit_durations(props: list[float], target: float,
     셋잇단이 유입된다 (실측: 이 악보 m5·m7 이 바뀌었다).
 
     `tuplet_indices`를 주면 그 묶음만 셋잇단으로, 나머지는 일반 음가로 푼다.
+    `floors` 는 길이의 하한만 아는 자리다 — 뒤에 쉼표가 생략됐을 수 있는 음.
 
     Returns: (스냅 결과, 합이 정확히 맞았는지)
     """
@@ -120,16 +132,21 @@ def fit_durations(props: list[float], target: float,
     pins = pinned or {}
     legal_pool = LEGAL if allow_tuplets else PLAIN_LEGAL
 
+    lows = floors or {}
+
     def candidates_at(index):
         if index in pins:
             return (pins[index],)
+        pool = legal_pool
         if tuplet_indices is not None:
-            return tuple(d for d in LEGAL
+            pool = tuple(d for d in LEGAL
                          if bool(d.tuplet) == (index in tuplet_indices))
-        return legal_pool
+        if index in lows:
+            pool = tuple(d for d in pool if d.quarters >= lows[index] - EPSILON)
+        return pool
 
     target_units = _units(target)
-    if target_units <= 0:
+    if target_units is None or target_units <= 0:
         return [_nearest(prop) for prop in props], False
 
     @lru_cache(maxsize=DP_CACHE_SIZE)
@@ -142,7 +159,7 @@ def fit_durations(props: list[float], target: float,
         candidates = candidates_at(index)
         for legal in candidates:
             need = _units(legal.quarters)
-            if need > remaining:
+            if need is None or need > remaining:
                 continue
             tail = solve(index + 1, remaining - need)
             if tail is None:
@@ -160,9 +177,76 @@ def fit_durations(props: list[float], target: float,
     if solution is None:
         # 정확히 맞출 조합이 없다 — 거짓말하지 않고 최근접 스냅 + 실패 보고.
         # 고정 자리는 아는 값을 그대로 쓴다.
-        return [min(candidates_at(i), key=lambda d: abs(d.quarters - prop))
+        return [min(candidates_at(i) or LEGAL, key=lambda d: abs(d.quarters - prop))
                 for i, prop in enumerate(props)], False
     return list(solution[1]), True
+
+
+def _window_runs(window: tuple[int, ...]) -> list[frozenset[int]]:
+    """창 안에서 셋잇단일 수 있는 연속 구간 — 두 이벤트 이상 (4분+8분 셋잇단).
+
+    창 전체를 맨 앞에 둔다 — 가장 흔한 읽기(세 음 셋잇단)부터 본다.
+    """
+    runs = [frozenset(window[a:b]) for a in range(len(window))
+            for b in range(a + 2, len(window) + 1)]
+    return sorted(runs, key=len, reverse=True)
+
+
+# 창 조합을 전부 볼 상한 — 넘으면 좌표 하강
+EXHAUSTIVE_TRIPLET_CHOICES = 256
+
+
+def best_window_choice(options: list[list[frozenset[int]]], evaluate):
+    """창마다 셋잇단 구간 하나를 골라 `evaluate` 가 가장 낮은 조합을 찾는다.
+
+    `evaluate(choice)` 는 (정렬 키, ...) 튜플을 돌려준다. 조합이 작으면 전부 보고
+    (두 창을 함께 바꿔야 맞는 해), 크면(창 여덟 개면 6561가지) 한 창씩 바꿔 보는
+    좌표 하강으로 찾는다.
+    """
+    if prod(len(runs) for runs in options) <= EXHAUSTIVE_TRIPLET_CHOICES:
+        return min((evaluate(list(choice)) for choice in product(*options)),
+                   key=lambda trial: trial[0])
+    choice = [runs[0] for runs in options]
+    best = evaluate(choice)
+    improved = True
+    while improved:
+        improved = False
+        for position, runs in enumerate(options):
+            for run in runs:
+                if run == choice[position]:
+                    continue
+                trial = evaluate(choice[:position] + [run] + choice[position + 1:])
+                if trial[0] < best[0]:
+                    best, choice[position], improved = trial, run, True
+    return best
+
+
+def window_options(windows) -> list[list[frozenset[int]]]:
+    return [runs for runs in map(_window_runs, windows) if runs]
+
+
+def fit_with_triplets(props: list[float], target: float,
+                      pinned: dict[int, LegalDuration],
+                      forced: set[int],
+                      windows: list[tuple[int, ...]],
+                      ) -> tuple[list[LegalDuration], bool, set[int]]:
+    """확정 셋잇단 묶음에 더해, '3' 표기 창마다 셋잇단 구간 하나를 반드시 고른다.
+
+    창의 이벤트를 전부 강제하면 4분+8분 셋잇단 뒤의 정상 음이 끌려 들어가고,
+    후보만 열면 간격이 고른 마디에서 표기를 버린다. 창마다 연속 구간 하나를
+    골라 합이 맞는 것 중 x 간격에 가장 가까운 해를 쓴다.
+
+    Returns: (스냅 결과, 합이 정확히 맞았는지, 셋잇단으로 푼 인덱스)
+    """
+    def evaluate(choice):
+        tuplets = set(forced).union(*choice)
+        pins = {i: as_triplet(p) if i in tuplets and p.tuplet is None else p
+                for i, p in pinned.items()}
+        fitted, exact = fit_durations(props, target, pinned=pins, tuplet_indices=tuplets)
+        cost = sum(abs(d.quarters - p) for d, p in zip(fitted, props))
+        return (not exact, cost), fitted, exact, tuplets
+
+    return best_window_choice(window_options(windows), evaluate)[1:]
 
 
 def rest_durations(quarters: float) -> list[LegalDuration]:

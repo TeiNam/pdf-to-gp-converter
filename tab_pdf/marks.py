@@ -183,12 +183,23 @@ def apply_tie_curves(geo, system, system_measures: list[dict], warn) -> None:
     ponytail: 시스템 경계 타이는 미지원 — 필요해지면 시스템 끝/시작 반쪽
     호를 짝짓는다.
     """
-    beats = [beat for measure in system_measures for beat in measure["beats"]]
+    # 채움 쉼표는 표기에 없는 자리다 — 두 음을 떼어 놓는 쉼표로 보지 않는다.
+    # (못갖춘마디 재맞춤 전의 긴 박자표가 넣은 쉼표가 타이를 끊었다)
+    beats = [beat for measure in system_measures for beat in measure["beats"]
+             if not beat.get("fill")]
+    owner = {id(beat): measure["index"] for measure in system_measures
+             for beat in measure["beats"]}
+    # 성부 표시가 없는 beat 은 단성부 마디다 — 호가 어느 성부에서 넘어와도 찾는다.
+    # 하지만 GP5 타이는 같은 성부의 앞 음을 잇는다: 두 성부 마디의 아랫성부에서
+    # 단성부(첫 성부)로 넘어가는 타이를 걸면 GP 가 첫 성부의 앞 음(없으면 0프렛)을
+    # 이어 버린다. 그런 호는 걸지 않고 경고한다
     for voice in sorted({beat.get("voice", 0) for beat in beats}):
-        _apply_voice_ties(geo, system, [b for b in beats if b.get("voice", 0) == voice])
+        _apply_voice_ties(geo, system, [b for b in beats
+                                        if b.get("voice", voice) == voice],
+                          warn, owner)
 
 
-def _apply_voice_ties(geo, system, beats):
+def _apply_voice_ties(geo, system, beats, warn, owner):
     if not beats:
         return
     low = system.tab_ys[0] - bands.TAB_BAND_MARGIN
@@ -224,6 +235,13 @@ def _apply_voice_ties(geo, system, beats):
                    for y in (curve.y0, curve.y1)) > spacing:
                 continue
             shared = {pair for pair in shared if pair[0] == string}
+        # 호가 가리키는 음을 정한 뒤에 성부를 본다 — 같은 x 의 다른 성부 음 때문에
+        # 정상 타이에 경고가 붙으면 안 된다
+        if beats[left].get("voice", 0) != beats[right].get("voice", 0):
+            warn.add(owner[id(beats[right])], "tie_across_voices",
+                     f"x={beats[right]['x']:.1f} 타이가 다른 성부의 음을 잇는다 "
+                     f"— GP5 는 성부를 건너 타이를 걸 수 없어 다시 친다")
+            continue
         for note in beats[right]["notes"]:
             if (note["string"], note["fret"]) in shared:
                 note["tie"] = True

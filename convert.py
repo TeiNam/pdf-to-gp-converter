@@ -16,6 +16,7 @@ import os
 import shutil
 import subprocess
 import sys
+import unicodedata
 
 from tab_pdf import ai, build, extract, refine
 
@@ -54,22 +55,35 @@ def open_in_guitar_pro(file_path: str) -> None:
     subprocess.run(["open", "-a", GUITAR_PRO_APP, file_path], check=True)
 
 
+def _same_path(a: str, b: str) -> bool:
+    """두 경로가 같은 파일을 가리키는가.
+
+    문자열 비교만으로는 부족하다 — macOS 파일시스템은 한글 파일명의 NFC/NFD
+    표기를 같은 파일로 연다. 둘 다 있으면 실제 파일 동일성으로 본다.
+    """
+    if os.path.exists(a) and os.path.exists(b):
+        return os.path.samefile(a, b)
+    def key(path: str) -> str:
+        return unicodedata.normalize(
+            "NFC", os.path.normcase(os.path.abspath(path)))
+    return key(a) == key(b)
+
+
 def _validate(args) -> str | None:
     """사용자 입력을 검증한다. 문제가 있으면 메시지를 돌려준다."""
     if not os.path.isfile(args.pdf):
         return f"PDF 파일이 없습니다: {args.pdf}"
     if args.output is not None:
-        if os.path.abspath(args.output) == os.path.abspath(args.pdf):
+        if _same_path(args.output, args.pdf):
             # 산출물이 입력 PDF 를 덮어쓰면 원본이 사라진다
             return f"-o 가 입력 PDF 와 같습니다: {args.output}"
-        if (args.ir is not None
-                and os.path.abspath(args.output) == os.path.abspath(args.ir)):
+        if args.ir is not None and _same_path(args.output, args.ir):
             return f"-o 와 --ir 가 같은 파일입니다: {args.output}"
     if args.ir is None:
         return None
     if not args.ir.lower().endswith(IR_SUFFIX):
         return f"--ir 는 {IR_SUFFIX} 여야 합니다: {args.ir}"
-    if os.path.abspath(args.ir) == os.path.abspath(args.pdf):
+    if _same_path(args.ir, args.pdf):
         # 원본 PDF 를 JSON 으로 덮어쓰면 복구할 수 없다
         return f"--ir 가 입력 PDF 와 같습니다: {args.ir}"
     return None
@@ -137,7 +151,7 @@ def _report(ir: dict, output: str, mode: str) -> int:
     return len(defects)
 
 
-def main(argv: list[str] | None = None) -> int:
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Finale 조판 기타 타브 PDF 를 Guitar Pro .gp5 로 변환한다.",
         epilog="GP8 에서 열어 원본 PDF 와 대조한 뒤 .gp 로 저장하면 된다.",
@@ -164,6 +178,11 @@ def main(argv: list[str] | None = None) -> int:
                         help="1차 변환 결과를 AI 로 보정한다 (.env 설정 필요)")
     parser.add_argument("--ai-limit", type=int, metavar="N",
                         help="AI 배치를 앞 N개만 보낸다 (비용 확인용)")
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = build_parser()
     args = parser.parse_args(argv)
 
     if args.ai_limit is not None and not args.ai:

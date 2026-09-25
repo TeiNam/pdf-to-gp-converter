@@ -341,3 +341,16 @@ def test_ai_keeps_only_unresolved_chords_and_preserves_other_warnings():
     failed_result, _ = refine.refine_ir(ir, config=config, ask=failed)
     assert len([w for w in failed_result["warnings"] if w["kind"] == "unknown_chord"]) == 2
     assert any(w["kind"] == "ai_batch_failed" for w in failed_result["warnings"])
+
+
+def test_widely_spaced_four_beams_still_make_sixty_fourths(tmp_path):
+    """빔 4개가 5pt 간격이면 스택이 15pt — 절대 14pt 창은 마지막 빔을 놓친다."""
+    xs = [60. + i * 20 for i in range(16)]
+    geo = geometry.PageGeometry(
+        glyphs=[glyph(x, 176, "0") for x in xs],
+        vlines=[geometry.VLine(x + 2.5, 179, 225) for x in xs],
+        beams=[geometry.Beam(62.5, 225 - level * 5, 362.5, 225 - level * 5)
+               for level in range(4)])
+    result, warn = measure(geo, bounds=(40., 380.), time_sig=(1, 4))
+    assert [b["duration"] for b in result["beats"]] == [64] * 16
+    assert not warn.items

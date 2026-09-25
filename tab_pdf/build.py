@@ -2,7 +2,6 @@
 
 import contextlib
 import os
-import re
 import tempfile
 
 import guitarpro as gp
@@ -14,7 +13,7 @@ from guitarpro.models import (
     NoteType, SlideType, Song, TimeSignature, Track, Voice,
 )
 
-from . import chords
+from . import chords, header
 
 # GP5 는 8비트 charset — 한글 보존에 필요
 GP5_ENCODING = "cp949"
@@ -58,15 +57,9 @@ def _apply_stroke(beat: Beat, stroke: str | None) -> None:
 
 
 def _key_signature(name: str) -> KeySignature | None:
-    """'C'·'Am'·'F#' 같은 조성을 조표와 장·단조 모드까지 보존한다."""
-    text = (name or "").strip().replace("♯", "#").replace("♭", "b")
-    match = re.fullmatch(r"([A-G])([#b]?)(m?)", text)
-    if match is None:
-        return None
-    root, accidental, minor = match.groups()
-    mode = "Minor" if minor else "Major"
-    suffix = {"#": "Sharp", "b": "Flat"}.get(accidental, "")
-    return getattr(KeySignature, f"{root}{mode}{suffix}", None)
+    """'C'·'Am'·'F# minor' 같은 조성을 조표와 장·단조 모드까지 보존한다."""
+    parsed = header.parse_key(name)
+    return None if parsed is None else KeySignature(parsed)
 
 
 def _first_lyric_measure(ir: dict) -> int | None:

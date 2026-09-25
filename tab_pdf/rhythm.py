@@ -189,6 +189,20 @@ def is_triplet_mark(mark, system, notes=(), fret_glyphs=()) -> bool:
             <= system.tab_ys[-1] + STEM_MARGIN)
 
 
+# 위 기둥 끝 바로 위의 '3' 만 타브 표기로 본다 — 기둥 끝과의 세로·가로 거리 (pt)
+MARK_ABOVE_STEM = 15.0
+MARK_STEM_X = 30.0
+
+
+def _tab_linked(geo, system, mark, notes) -> bool:
+    """타브 대역 위의 '3' 이 위 기둥 성부의 표기인가. 대역 안·아래는 늘 타브다."""
+    if mark.y >= system.tab_ys[0] - bands.TAB_BAND_MARGIN:
+        return True
+    return any(0 <= stem.y0 - mark.y <= MARK_ABOVE_STEM
+               and abs(stem.x - mark.x) <= MARK_STEM_X
+               for note in notes for stem in stems_for(geo, system, note))
+
+
 def triplet_groups(geo, system, beat_xs, notes, bounds, fret_glyphs=()):
     """'3'의 위치와 빔으로 셋잇단 범위를 정한다.
 
@@ -213,6 +227,8 @@ def triplet_groups(geo, system, beat_xs, notes, bounds, fret_glyphs=()):
             if members:
                 spans.append((distance, list(range(min(members), max(members) + 1))))
         exact = [(d, span) for d, span in spans if len(span) == 3]
+        if not spans and not _tab_linked(geo, system, mark, notes):
+            continue                # 오선 선율의 '3' — 타브 빔·기둥과 이어지지 않는다
         if exact:
             forced.append(min(exact)[1])
         elif explicit and spans:

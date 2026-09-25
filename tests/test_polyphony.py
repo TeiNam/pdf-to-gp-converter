@@ -734,3 +734,31 @@ def test_sixty_fourth_triplets_are_on_the_triplet_grid(tmp_path):
     assert [b.duration.tuplet.enters for b in upper.beats][:3] == [3, 3, 3]
     assert voice_total(upper) == voice_total(lower) == 960
     assert not warn.items
+
+
+# --- 8라운드 교차 리뷰 재현 사례 ---
+
+def test_staff_triplet_mark_does_not_bend_the_tab_rhythm():
+    """오선 바로 아래(y=132)의 '3' 은 타브 빔·기둥과 무관하다 — 타브 8분 여덟을 건드리지 않는다."""
+    xs = [60. + 40 * i for i in range(8)]
+    geo = geometry.PageGeometry(
+        glyphs=[*[glyph(x, 176, "0") for x in xs], *[_flag(x, 1) for x in xs],
+                glyph(100, 132, TUPLET)],
+        vlines=[geometry.VLine(x + 2.5, 179, 225) for x in xs])
+    result, warn = measure(geo, bounds=(40., 380.))
+    assert [(b["duration"], b["tuplet"]) for b in result["beats"]] == [(8, None)] * 8
+    assert not warn.items
+
+
+def test_dotted_sixty_fourth_triplets_fit_the_shared_grid(tmp_path):
+    """1/4: 윗 [점32분·점64분·점64분] 셋잇단 + 점8분, 아래 4분쉼표."""
+    upper_g, upper_s = _pinned_voice(
+        [(60, .1875), (75, .09375), (82, .09375), (90, .75)], 160, False)
+    geo = geometry.PageGeometry(
+        glyphs=[*upper_g, glyph(75, 128, TUPLET), glyph(60, 192, QUARTER_REST)],
+        vlines=upper_s)
+    result, warn = measure(geo, bounds=(40., 270.), time_sig=(1, 4))
+    upper, lower = round_trip(song_for([result]), tmp_path).tracks[0].measures[0].voices
+    assert [b.duration.time for b in upper.beats] == [120, 60, 60, 720]
+    assert voice_total(lower) == 960
+    assert not warn.items

@@ -33,6 +33,8 @@ REFERENCE_DIGIT_SIZE = 9.3
 # 선 간격과 숫자 크기로 잰 두 배율이 이만큼 안에서 맞아야 페이지 배율로 믿는다.
 # 확대·축소 내보내기는 둘을 함께 바꾸고, 조판 차이(좁은 타브 간격)는 한쪽만 바꾼다
 SCALE_AGREEMENT = 0.1
+# 프렛 숫자의 baseline 은 자기 줄에서 선 간격의 절반 안에 있다 (실측 3.3pt / 7.7pt)
+FRET_ON_LINE_RATIO = 0.6
 # 이 안의 배율 차이는 문턱들의 여유로 흡수된다 — 좌표를 건드리지 않는다
 # (합성 악보의 8pt 타브 간격은 기준보다 4% 넓지만 그대로 읽힌다)
 SCALE_TOLERANCE = 0.05
@@ -182,7 +184,11 @@ def page_scale(hlines: list[HLine], glyphs: list[Glyph]) -> float:
     scale = gaps[len(gaps) // 2] / REFERENCE_STAFF_GAP
     if abs(scale - 1.0) < SCALE_TOLERANCE:
         return 1.0
-    sizes = Counter(g.size for g in glyphs if g.char.isdigit())
+    # 선 위에 놓인 숫자(프렛)만 센다 — 머리글 날짜·페이지 번호가 최빈값을 차지하면
+    # 배율을 잘못 확증한다
+    gap = gaps[len(gaps) // 2]
+    sizes = Counter(g.size for g in glyphs if g.char.isdigit()
+                    and min(abs(g.y - y) for y in ys) <= FRET_ON_LINE_RATIO * gap)
     if not sizes:
         return 1.0      # 확인할 숫자가 없다 — 조판 차이일 수 있어 건드리지 않는다
     digit_scale = sizes.most_common(1)[0][0] / REFERENCE_DIGIT_SIZE

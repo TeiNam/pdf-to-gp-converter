@@ -122,6 +122,9 @@ def voice_assignments(geo, system, notes, rests, target=4.0, tolerance=2.0):
         for group in groups)
     conflict |= any(abs(rest.x - note.x) <= tolerance
                     for rest in rests for note in notes)
+    # 같은 x 의 쉼표 둘은 두 성부다 — 음 없이 쉬기만 하는 마디도 성부를 합치면 안 된다
+    conflict |= any(abs(a.x - b.x) <= tolerance and abs(a.y - b.y) > tolerance
+                    for i, a in enumerate(rests) for b in rests[i + 1:])
     if not conflict and not (whole_rests and notes):
         return None
     assignments = {}
@@ -231,13 +234,27 @@ def triplet_groups(geo, system, beat_xs, notes, bounds, fret_glyphs=()):
             continue                # 오선 선율의 '3' — 타브 빔·기둥과 이어지지 않는다
         if exact:
             forced.append(min(exact)[1])
-        elif explicit and spans:
-            windows.append(tuple(min(spans)[1]))
         elif explicit:
+            # 빔이 묶은 음과 표기에 가장 가까운 세 이벤트를 함께 본다 — 빔이 뒤 두
+            # 음만 잇는 [쉼표·8분·8분] 셋잇단의 쉼표를 창에서 빼면 안 된다
             nearest = sorted(range(len(beat_xs)), key=lambda i: abs(beat_xs[i] - mark.x))
-            windows.append(tuple(sorted(nearest[:3])))
+            members = set(nearest[:3]) | (set(min(spans)[1]) if spans else set())
+            windows.append(tuple(range(min(members), max(members) + 1)))
     taken = {i for group in forced for i in group}
-    return forced, [w for w in windows if len(w) >= 2 and not taken & set(w)]
+    return forced, [w for w in map(lambda w: _free_run(w, taken), windows) if len(w) >= 2]
+
+
+def _free_run(window, taken):
+    """확정 묶음과 겹친 창에서 겹치지 않은 가장 긴 연속 구간."""
+    runs, current = [], []
+    for i in window:
+        if i in taken:
+            runs.append(current)
+            current = []
+        else:
+            current.append(i)
+    runs.append(current)
+    return tuple(max(runs, key=len))
 
 
 def shared_triplet_group(geo, system, beat_xs, notes, bounds, pins, target):

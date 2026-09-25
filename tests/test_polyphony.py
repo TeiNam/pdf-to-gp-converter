@@ -762,3 +762,55 @@ def test_dotted_sixty_fourth_triplets_fit_the_shared_grid(tmp_path):
     assert [b.duration.time for b in upper.beats] == [120, 60, 60, 720]
     assert voice_total(lower) == 960
     assert not warn.items
+
+
+# --- 9라운드 교차 리뷰 재현 사례 ---
+
+def test_beamed_triplet_starting_with_a_rest():
+    """1/4: [8분쉼표@60, 8분@90, 8분@120] 셋잇단 — 빔은 뒤 두 음만 잇는다."""
+    geo = geometry.PageGeometry(
+        glyphs=[glyph(60, 184, chr(0xE4E6)), glyph(90, 176, "0"), glyph(120, 176, "0"),
+                glyph(105, 232, TUPLET)],
+        vlines=[geometry.VLine(x + 2.5, 179, 225) for x in (90., 120.)],
+        beams=[geometry.Beam(92.5, 225, 122.5, 225)])
+    result, warn = measure(geo, bounds=(40., 150.), time_sig=(1, 4))
+    assert [b["tuplet"] for b in result["beats"]] == [[3, 2]] * 3
+    assert not warn.items
+
+
+def test_window_overlapping_a_beamed_group_keeps_its_free_part():
+    """4/4: [8·8·8]₃(빔) + [8·16]₃ + 2분쉼표 + 8분 — 두 번째 '3' 창이 앞 묶음과 겹친다."""
+    xs = (60., 90., 120., 150., 210.)
+    geo = geometry.PageGeometry(
+        glyphs=[*[glyph(x, 176, "0") for x in xs], glyph(90, 232, TUPLET),
+                _flag(150, 1), _flag(210, 2), glyph(170, 232, TUPLET),
+                glyph(240, 184, chr(0xE4E4)), glyph(360, 176, "0"), _flag(360, 1)],
+        vlines=[geometry.VLine(x + 2.5, 179, 225) for x in (*xs, 360.)],
+        beams=[geometry.Beam(62.5, 225, 122.5, 225)])
+    result, warn = measure(geo, bounds=(40., 420.))
+    assert [b["tuplet"] for b in result["beats"]][:5] == [[3, 2]] * 5
+    assert not warn.items
+
+
+def test_rest_only_measure_keeps_both_voices(tmp_path):
+    """윗성부 4분쉼표 넷, 아랫성부 2분쉼표 둘 — 음이 없어도 두 성부다."""
+    geo = geometry.PageGeometry(glyphs=[
+        *[glyph(x, 152, QUARTER_REST) for x in (60., 150., 240., 330.)],
+        *[glyph(x, 192, chr(0xE4E4)) for x in (60., 240.)]])
+    result, warn = measure(geo)
+    upper, lower = round_trip(song_for([result]), tmp_path).tracks[0].measures[0].voices
+    assert voice_total(upper) == voice_total(lower) == BAR
+    assert not warn.items
+
+
+def test_stroke_is_not_pulled_to_the_other_voices_beam():
+    geo = geometry.PageGeometry(
+        glyphs=[*[glyph(x, 160, "3") for x in (60., 150., 240., 330.)],
+                *[glyph(x, 200, "0") for x in (60., 240.)],
+                glyph(150, 188, extract.SMUFL_STROKE_DOWN)],
+        vlines=[*up_stems((60., 150., 240., 330.)),
+                *[geometry.VLine(x + 2.5, 197, 225) for x in (60., 240.)]],
+        beams=[geometry.Beam(62.5, 197, 242.5, 197)])
+    result, _ = measure(geo)
+    stroked = [(b["x"], b["voice"]) for b in result["beats"] if b.get("stroke")]
+    assert stroked == [(150.0, 0)]

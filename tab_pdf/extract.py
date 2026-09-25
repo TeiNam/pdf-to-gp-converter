@@ -629,17 +629,19 @@ def _voice_of_marks(geo, system, bounds, notes, rests, frets, graces, raw_digits
                          key=lambda n: n.x, default=None)
             assigned[mark] = assigned.get(source, 0)
         elif _is_voice_mark(mark, system, notes, raw_digits):
+            triplet = rhythm.is_triplet_mark(mark, system, notes, raw_digits)
             # 셋잇단 '3' 은 자기 빔이 묶은 음의 성부다 — 거리로 고르면 빔 반대편
             # 성부의 음이 더 가까울 때 남의 셋잇단이 된다
-            held = rhythm.mark_beam_notes(geo, system, mark, notes)
+            held = rhythm.mark_beam_notes(geo, system, mark, notes) if triplet else []
             if held:
                 voices = [assigned[n] for n in held]
                 assigned[mark] = max(set(voices), key=voices.count)
                 continue
             # 셋잇단 '3' 은 쉼표도 후보다 — 쉼표뿐인 성부의 '3' 이 음 쪽 성부로 가면
             # 안 된다. 악센트·스트로크는 음에만 걸린다 (쉼표 성부로 가면 사라진다)
-            owners = (notes + rests if rhythm.is_triplet_mark(mark, system, notes, raw_digits)
-                      else notes)
+            owners = notes + rests if triplet else notes
+            if not owners:
+                continue            # 쉼표뿐인 마디의 악센트 — 걸 음이 없다
             nearest = min(owners, key=lambda n: math.hypot(n.x - mark.x, n.y - mark.y))
             assigned[mark] = assigned[nearest]
 

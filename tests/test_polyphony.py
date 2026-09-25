@@ -550,3 +550,67 @@ def test_accent_is_not_given_to_the_rest_voice():
     accented = [b for b in result["beats"]
                 if any(t["kind"] == "accent" for t in b["techniques"])]
     assert [(b["x"], b["voice"], bool(b["notes"])) for b in accented] == [(60.0, 0, True)]
+
+
+# --- 5라운드 교차 리뷰 재현 사례 ---
+
+def _pinned_voice(events, y, down):
+    """(x, 박 길이) 목록을 꼬리·점으로 고정한 음으로 그린다."""
+    glyphs, stems = [], []
+    flags = {0.125: (3, False), 0.25: (2, False), 0.5: (1, False),
+             0.75: (1, True), 0.375: (2, True), 0.1875: (3, True)}
+    for x, length in events:
+        count, dotted = flags[length]
+        glyphs.append(glyph(x, y, "0"))
+        glyphs.append(_flag(x, count, down=down))
+        if dotted:
+            glyphs.append(glyph(x + 6, y, chr(0xE1E7)))
+    stems = down_stems([x for x, _ in events]) if down else up_stems([x for x, _ in events])
+    return glyphs, stems
+
+
+def test_multi_segment_note_pins_are_lower_bounds_on_the_timeline(tmp_path):
+    upper_g, upper_s = _pinned_voice([(60, .75), (160, .125), (200, .125)], 160, False)
+    lower_g, lower_s = _pinned_voice([(60, .125), (80, .75), (200, .125)], 200, True)
+    geo = geometry.PageGeometry(glyphs=upper_g + lower_g, vlines=upper_s + lower_s)
+    result, warn = measure(geo, bounds=(40., 220.), time_sig=(1, 4))
+    assert onset_at(result, 0, 200.) == onset_at(result, 1, 200.) == 0.875
+    upper, lower = round_trip(song_for([result]), tmp_path).tracks[0].measures[0].voices
+    assert voice_total(upper) == voice_total(lower) == 960
+    assert not warn.items
+
+
+def test_shared_gap_of_fifteen_sixteenths(tmp_path):
+    """2/4: 윗 [4분쉼표@60, 음@220], 아래 [64분@60, 4분쉼표@70, 점8분@230, 점32분@350]."""
+    lower_g, lower_s = _pinned_voice([(230, .75), (350, .1875)], 200, True)
+    geo = geometry.PageGeometry(
+        glyphs=[glyph(60, 152, QUARTER_REST), glyph(220, 160, "3"),
+                glyph(60, 200, "0"), _flag(60, 4), glyph(70, 192, QUARTER_REST),
+                *lower_g],
+        vlines=[*up_stems((220.,)), *down_stems((60.,)), *lower_s])
+    result, warn = measure(geo, bounds=(40., 380.), time_sig=(2, 4))
+    upper, lower = round_trip(song_for([result]), tmp_path).tracks[0].measures[0].voices
+    assert voice_total(upper) == voice_total(lower) == 1920
+    assert not warn.items
+
+
+def test_rest_constraint_far_from_x_spacing_is_kept(tmp_path):
+    """4/4: 두 성부 모두 2분쉼표@60 → 음@90 — x 비례는 1/3 박이지만 쉼표가 2박이다."""
+    geo = geometry.PageGeometry(
+        glyphs=[glyph(60, 152, chr(0xE4E4)), glyph(90, 160, "3"),
+                glyph(60, 192, chr(0xE4E4)), glyph(90, 200, "0")],
+        vlines=[*up_stems((90.,)), *down_stems((90.,))])
+    result, warn = measure(geo, bounds=(40., 420.))
+    upper, lower = round_trip(song_for([result]), tmp_path).tracks[0].measures[0].voices
+    assert voice_total(upper) == voice_total(lower) == BAR
+    assert not warn.items
+
+
+def test_triplet_windows_that_must_change_together():
+    from tab_pdf import durations
+    plain = {8: durations.LegalDuration(8, False, .5), 16: durations.LegalDuration(16, False, .25)}
+    pins = {i: plain[v] for i, v in enumerate([8, 16, 8, 8, 16, 8])}
+    fitted, exact, _ = durations.fit_with_triplets(
+        [1 / 3] * 6, 2.0, pins, set(), [(0, 1, 2), (3, 4, 5)])
+    assert exact
+    assert abs(sum(d.quarters for d in fitted) - 2.0) < durations.EPSILON

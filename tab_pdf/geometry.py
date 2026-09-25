@@ -197,9 +197,20 @@ def page_scale(hlines: list[HLine], glyphs: list[Glyph]) -> float:
             groups.append(current)
             current = [y]
     groups.append(current)
-    tab_lines = [y for group in groups if len(group) == TAB_LINE_COUNT for y in group]
-    sizes = Counter(g.size for g in glyphs if g.char.isdigit() and tab_lines
-                    and min(abs(g.y - y) for y in tab_lines) <= FRET_ON_LINE_RATIO * gap)
+    # 가로로도 타브 선 안쪽이어야 한다 — 왼쪽 여백의 마디 번호를 뺀다
+    extents: dict[float, tuple[float, float]] = {}
+    for h in hlines:
+        if h.width > MIN_STAFF_LINE_WIDTH:
+            x0, x1 = extents.get(round(h.y, 1), (h.x0, h.x1))
+            extents[round(h.y, 1)] = (min(x0, h.x0), max(x1, h.x1))
+    tabs = [(group, min(extents[y][0] for y in group), max(extents[y][1] for y in group))
+            for group in groups if len(group) == TAB_LINE_COUNT]
+
+    def on_tab(glyph: Glyph) -> bool:
+        return any(x0 <= glyph.x <= x1 and min(abs(glyph.y - y) for y in group)
+                   <= FRET_ON_LINE_RATIO * gap for group, x0, x1 in tabs)
+
+    sizes = Counter(g.size for g in glyphs if g.char.isdigit() and on_tab(g))
     if not sizes:
         return 1.0      # 확인할 숫자가 없다 — 조판 차이일 수 있어 건드리지 않는다
     digit_scale = sizes.most_common(1)[0][0] / REFERENCE_DIGIT_SIZE

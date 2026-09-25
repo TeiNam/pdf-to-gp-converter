@@ -832,3 +832,37 @@ def test_two_whole_rests_in_the_middle_of_a_song_do_not_crash():
     extract._adjust_boundary_measures(measures, warn)
     assert all(m["time_sig"] == [4, 4] for m in measures)
     assert not warn.items
+
+
+# --- 11라운드 교차 리뷰 재현 사례 ---
+
+def test_close_events_of_one_voice_stay_distinct_in_the_shared_timeline(tmp_path):
+    """1/4: 윗 8분 둘 x=(60,63) 줄(1,2), 아래 8분 둘 x=(58,61.5) 줄(5,6)."""
+    geo = geometry.PageGeometry(
+        glyphs=[glyph(60, 160, "3"), glyph(63, 168, "3"), glyph(58, 192, "0"),
+                glyph(61.5, 200, "0"),
+                _flag(60, 1, down=False), _flag(63, 1, down=False), _flag(58, 1), _flag(61.5, 1)],
+        vlines=[geometry.VLine(62.5, 135, 151), geometry.VLine(65.5, 135, 159),
+                geometry.VLine(60.5, 195, 225), geometry.VLine(64., 203, 225)])
+    result, warn = measure(geo, bounds=(40., 70.), time_sig=(1, 4))
+    upper, lower = round_trip(song_for([result]), tmp_path).tracks[0].measures[0].voices
+    assert voice_total(upper) == voice_total(lower) == 960
+    assert not warn.items
+
+
+def test_grace_carried_into_a_lower_voice_slash_chord():
+    """이월된 6번줄 꾸밈음 → 다음 마디 아랫성부 G 슬래시(4번줄 자리)의 6번줄."""
+    slash = chr(extract.SMUFL_SLASH_RANGE[0])
+    geo = geometry.PageGeometry(
+        glyphs=[*[glyph(x, 160, "3") for x in (420., 510., 600., 690.)],
+                glyph(420, 184, slash)],
+        vlines=[*up_stems((420., 510., 600., 690.)), geometry.VLine(422.5, 187, 225),
+                *[geometry.VLine(x, 100., 200.) for x in (40., 400., 760.)]])
+    warn = extract._Warnings()
+    pending = [{"x": -1.0, "string": 6, "fret": 2, "carried": True}]
+    second = extract._build_measure(geo, SYSTEM, (400., 760.), 1, [(415., "G")], warn,
+                                    (4, 4), extract.build_letter_index(geo), [],
+                                    pending_graces=pending)
+    low = next(n for b in second["beats"] for n in b["notes"] if n["string"] == 6)
+    assert low.get("grace_fret") == 2
+    assert not [w for w in warn.items if w["kind"] == "grace_dropped"]

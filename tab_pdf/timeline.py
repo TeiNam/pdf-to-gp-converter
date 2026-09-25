@@ -90,12 +90,25 @@ def _owns_triplet(voice: VoiceEvents, i: int) -> bool:
 
 
 def _union_timeline(voices, tolerance):
+    """모든 성부의 이벤트 x 를 공통 시각으로 묶는다. Returns: (시각 x, 성부별 인덱스).
+
+    한 묶음에는 성부마다 이벤트가 하나뿐이다 — 가까운 두 음을 한 시각으로 합치면
+    그 성부의 이벤트 하나가 사라진 것처럼 풀린다. 인덱스는 묶음 소속으로 정한다.
+    """
+    events = sorted((x, v, i) for v, voice in enumerate(voices) if not voice.whole_rest
+                    for i, x in enumerate(voice.xs))
     union: list[float] = []
-    for x in sorted(x for v in voices if not v.whole_rest for x in v.xs):
-        if not union or x - union[-1] > tolerance:
+    members: list[dict[int, int]] = []
+    for x, v, i in events:
+        if union and x - union[-1] <= tolerance and v not in members[-1]:
+            members[-1][v] = i
+        else:
             union.append(x)
-    positions = [[min(range(len(union)), key=lambda k: abs(union[k] - x)) for x in v.xs]
-                 if not v.whole_rest else [] for v in voices]
+            members.append({v: i})
+    positions = [[0] * len(voice.xs) if not voice.whole_rest else [] for voice in voices]
+    for k, group in enumerate(members):
+        for v, i in group.items():
+            positions[v][i] = k
     return union, positions
 
 
